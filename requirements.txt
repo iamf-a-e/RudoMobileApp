@@ -1,9 +1,0 @@
-flask
-requests
-google-generativeai
-urlextract
-pymupdf
-sqlalchemy
-upstash-redis
-python-dotenv
-gunicorn
