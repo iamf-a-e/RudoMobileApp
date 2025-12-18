@@ -7,7 +7,7 @@ import random
 import string
 import logging
 from datetime import datetime
-
+import products, instructions, pregnancy_data, pregnancy_data_shona, pregnancy_data_ndebele, pregnancy_data_tonga, pregnancy_data_chinyanja, pregnancy_data_bemba, pregnancy_data_lozi, cervical_cancer_data
 from flask import Flask, request, jsonify
 import google.generativeai as genai
 from upstash_redis import Redis
@@ -227,3 +227,4 @@ def health():
 if __name__ == "__main__":
     load_user_states()
     app.run(host="0.0.0.0", port=8000, debug=True)
+
