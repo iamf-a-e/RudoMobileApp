@@ -228,14 +228,28 @@ def chat():
     return jsonify({"reply": reply})
 
 
-@app.route("/health", methods=["GET"])
-def health():
-    return jsonify({"status": "ok", "time": datetime.utcnow().isoformat()})
+@app.route("/api/health", methods=["GET"])
+def health_check():
+    try:
+        test_model = genai.GenerativeModel(MODEL_NAME)
+        test_model.generate_content("Health check")
+
+        return jsonify({
+            "status": "healthy",
+            "model": MODEL_NAME,
+            "timestamp": str(datetime.now())
+        })
+    except Exception as e:
+        return jsonify({
+            "status": "unhealthy",
+            "error": str(e)
+        }), 500
 
 
 if __name__ == "__main__":
     load_user_states()
     app.run(host="0.0.0.0", port=8000, debug=True)
+
 
 
 
