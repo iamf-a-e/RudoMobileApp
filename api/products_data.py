@@ -1,5 +1,5 @@
 # products_data.py
-products_by_category = {
+products_data = {
     "Maternal Health": [
         {
             "name": "Ultrasound",
