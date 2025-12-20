@@ -74,24 +74,12 @@ if redis_url and redis_token:
 try:
     from .instructions import instructions
     from .products_data import products_data
-    from .pregnancy_data import pregnancy_data
-    from .pregnancy_data_shona import pregnancy_data_shona
-    from .pregnancy_data_ndebele import pregnancy_data_ndebele
-    from .pregnancy_data_tonga import pregnancy_data_tonga
-    from .pregnancy_data_chinyanja import pregnancy_data_chinyanja
-    from .pregnancy_data_bemba import pregnancy_data_bemba
-    from .pregnancy_data_lozi import pregnancy_data_lozi
+    from .pregnancy_data import pregnancy_data   
     from .cervical_cancer_data import cervical_cancer_data
     
     # Create language maps from the imported data
     maternal_map = {
-        "english": pregnancy_data,
-        "shona": pregnancy_data_shona,
-        "ndebele": pregnancy_data_ndebele,
-        "tonga": pregnancy_data_tonga,
-        "chinyanja": pregnancy_data_chinyanja,
-        "bemba": pregnancy_data_bemba,
-        "lozi": pregnancy_data_lozi
+        "english": pregnancy_data
     }
     
     cancer_map = {
@@ -460,6 +448,7 @@ if __name__ == "__main__":
     load_user_states()
     port = int(os.environ.get("PORT", 8000))
     app.run(host="0.0.0.0", port=port, debug=True)
+
 
 
 
