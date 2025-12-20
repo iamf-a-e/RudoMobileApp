@@ -1,11 +1,5 @@
 from .products_data import products_data 
 from .pregnancy_data import pregnancy_data as preg_mod
-from .pregnancy_data_shona import pregnancy_data_shona as preg_mod1
-from .pregnancy_data_ndebele import pregnancy_data_ndebele as preg_mod2
-from .pregnancy_data_tonga import pregnancy_data_tonga as preg_mod3
-from .pregnancy_data_chinyanja import pregnancy_data_chinyanja as preg_mod4
-from .pregnancy_data_bemba import pregnancy_data_bemba as preg_mod5
-from .pregnancy_data_lozi import pregnancy_data_lozi as preg_mod6
 from .cervical_cancer_data import cervical_cancer_data as cacx1
 
 
@@ -28,13 +22,8 @@ language_keywords = {
 
 
 maternal_map = {
-        "english": preg_mod,
-        "shona": preg_mod1,
-        "ndebele": preg_mod2,
-        "tonga": preg_mod3,
-        "chinyanja": preg_mod4,
-        "bemba": preg_mod5,
-        "lozi": preg_mod6
+        "english": preg_mod
+        
     }
 
 
@@ -232,6 +221,7 @@ instructions = (
 
       
 )
+
 
 
 
