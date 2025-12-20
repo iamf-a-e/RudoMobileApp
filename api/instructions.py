@@ -98,7 +98,7 @@ instructions = (
     f"- Website: {company_website}\n\n"
     
     "**Product Details:**\n\n"
-    f"{products.products}\n\n"
+    f"{products_data}\n\n"
 
     
     "**Contact Details:**\n\n"
@@ -232,6 +232,7 @@ instructions = (
 
       
 )
+
 
 
 
