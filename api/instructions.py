@@ -1,4 +1,12 @@
-from training import products, pregnancy_data, pregnancy_data_shona, pregnancy_data_ndebele, pregnancy_data_tonga, pregnancy_data_chinyanja, pregnancy_data_bemba, pregnancy_data_lozi, cervical_cancer_data
+from .products_data import products_data
+from .pregnancy_data import pregnancy_data
+from .pregnancy_data_shona import pregnancy_data_shona
+from .pregnancy_data_ndebele import pregnancy_data_ndebele
+from .pregnancy_data_tonga import pregnancy_data_tonga
+from .pregnancy_data_chinyanja import pregnancy_data_chinyanja
+from .pregnancy_data_bemba import pregnancy_data_bemba
+from .pregnancy_data_lozi import pregnancy_data_lozi
+from .cervical_cancer_data import cervical_cancer_data
 
 
 company_name="Dawa Health"
@@ -224,6 +232,7 @@ instructions = (
 
       
 )
+
 
 
 
