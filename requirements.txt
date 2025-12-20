@@ -7,3 +7,5 @@ psycopg2-binary
 redis
 upstash_redis
 packaging>=23.0
+firebase-admin==6.2.0
+python-dotenv==1.0.0
