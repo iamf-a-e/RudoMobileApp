@@ -18,7 +18,7 @@ from .pregnancy_data_bemba import pregnancy_data_bemba
 from .pregnancy_data_lozi import pregnancy_data_lozi
 from .cervical_cancer_data import cervical_cancer_data
 from flask import Flask, request, jsonify
-import google.generativeai as genai
+import google.genai as genai
 from upstash_redis import Redis
 
 # =====================
@@ -236,6 +236,7 @@ def health():
 if __name__ == "__main__":
     load_user_states()
     app.run(host="0.0.0.0", port=8000, debug=True)
+
 
 
 
