@@ -28,13 +28,13 @@ language_keywords = {
 
 
 maternal_map = {
-        "english": preg_mod.pregnancy_data,
-        "shona": preg_mod1.pregnancy_data_shona,
-        "ndebele": preg_mod2.pregnancy_data_ndebele,
-        "tonga": preg_mod3.pregnancy_data_tonga,
-        "chinyanja": preg_mod4.pregnancy_data_chinyanja,
-        "bemba": preg_mod5.pregnancy_data_bemba,
-        "lozi": preg_mod6.pregnancy_data_lozi
+        "english": preg_mod,
+        "shona": preg_mod1,
+        "ndebele": preg_mod2,
+        "tonga": preg_mod3,
+        "chinyanja": preg_mod4,
+        "bemba": preg_mod5,
+        "lozi": preg_mod6
     }
 
 
@@ -232,6 +232,7 @@ instructions = (
 
       
 )
+
 
 
 
