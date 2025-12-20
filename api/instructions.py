@@ -1,12 +1,12 @@
-from .products_data import products_data
-from .pregnancy_data import pregnancy_data
-from .pregnancy_data_shona import pregnancy_data_shona
-from .pregnancy_data_ndebele import pregnancy_data_ndebele
-from .pregnancy_data_tonga import pregnancy_data_tonga
-from .pregnancy_data_chinyanja import pregnancy_data_chinyanja
-from .pregnancy_data_bemba import pregnancy_data_bemba
-from .pregnancy_data_lozi import pregnancy_data_lozi
-from .cervical_cancer_data import cervical_cancer_data
+from .products_data import products_data 
+from .pregnancy_data import pregnancy_data as preg_mod
+from .pregnancy_data_shona import pregnancy_data_shona as preg_mod
+from .pregnancy_data_ndebele import pregnancy_data_ndebele as preg_mod
+from .pregnancy_data_tonga import pregnancy_data_tonga as preg_mod
+from .pregnancy_data_chinyanja import pregnancy_data_chinyanja as preg_mod
+from .pregnancy_data_bemba import pregnancy_data_bemba as preg_mod
+from .pregnancy_data_lozi import pregnancy_data_lozi as preg_mod
+from .cervical_cancer_data import cervical_cancer_data as preg_mod
 
 
 company_name="Dawa Health"
@@ -28,13 +28,13 @@ language_keywords = {
 
 
 maternal_map = {
-        "english": pregnancy_data.pregnancy_data,
-        "shona": pregnancy_data_shona.pregnancy_data_shona,
-        "ndebele": pregnancy_data_ndebele.pregnancy_data_ndebele,
-        "tonga": pregnancy_data_tonga.pregnancy_data_tonga,
-        "chinyanja": pregnancy_data_chinyanja.pregnancy_data_chinyanja,
-        "bemba": pregnancy_data_bemba.pregnancy_data_bemba,
-        "lozi": pregnancy_data_lozi.pregnancy_data_lozi
+        "english": preg_mod.pregnancy_data,
+        "shona": preg_mod_shona.pregnancy_data_shona,
+        "ndebele": preg_mod_ndebele.pregnancy_data_ndebele,
+        "tonga": preg_mod_tonga.pregnancy_data_tonga,
+        "chinyanja": preg_mod_chinyanja.pregnancy_data_chinyanja,
+        "bemba": preg_mod_bemba.pregnancy_data_bemba,
+        "lozi": preg_mod_lozi.pregnancy_data_lozi
     }
 
 
@@ -232,6 +232,7 @@ instructions = (
 
       
 )
+
 
 
 
