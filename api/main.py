@@ -7,8 +7,16 @@ import random
 import string
 import logging
 from datetime import datetime
-import instructions, pregnancy_data, pregnancy_data_shona, pregnancy_data_ndebele, pregnancy_data_tonga, pregnancy_data_chinyanja, pregnancy_data_bemba, pregnancy_data_lozi, cervical_cancer_data
+from .instructions import instructions
 from .products_data import products_data
+from .pregnancy_data import pregnancy_data
+from .pregnancy_data_shona import pregnancy_data_shona
+from .pregnancy_data_ndebele import pregnancy_data_ndebele
+from .pregnancy_data_tonga import pregnancy_data_tonga
+from .pregnancy_data_chinyanja import pregnancy_data_chinyanja
+from .pregnancy_data_bemba import pregnancy_data_bemba
+from .pregnancy_data_lozi import pregnancy_data_lozi
+from .cervical_cancer_data import cervical_cancer_data
 from flask import Flask, request, jsonify
 import google.generativeai as genai
 from upstash_redis import Redis
@@ -228,6 +236,7 @@ def health():
 if __name__ == "__main__":
     load_user_states()
     app.run(host="0.0.0.0", port=8000, debug=True)
+
 
 
 
