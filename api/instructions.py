@@ -6,7 +6,7 @@ from .pregnancy_data_tonga import pregnancy_data_tonga as preg_mod3
 from .pregnancy_data_chinyanja import pregnancy_data_chinyanja as preg_mod4
 from .pregnancy_data_bemba import pregnancy_data_bemba as preg_mod5
 from .pregnancy_data_lozi import pregnancy_data_lozi as preg_mod6
-from .cervical_cancer_data import cervical_cancer_data 
+from .cervical_cancer_data import cervical_cancer_data as cacx1
 
 
 company_name="Dawa Health"
@@ -39,7 +39,7 @@ maternal_map = {
 
 
 cancer_map = {
-        "english": cervical_cancer_data.cervical_cancer_data
+        "english": cacx1
         
     }
 
@@ -232,6 +232,7 @@ instructions = (
 
       
 )
+
 
 
 
