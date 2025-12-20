@@ -49,7 +49,7 @@ if not GEN_API:
     raise RuntimeError("GEN_API environment variable not set")
 
 genai.configure(api_key=GEN_API)
-MODEL_NAME = "gemini-2.0-flash-exp"
+MODEL_NAME = "gemini-2.5-flash-exp"
 
 # =====================
 # Redis (Upstash)
@@ -459,3 +459,4 @@ if __name__ == "__main__":
     load_user_states()
     port = int(os.environ.get("PORT", 8000))
     app.run(host="0.0.0.0", port=port, debug=True)
+
