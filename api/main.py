@@ -150,126 +150,50 @@ def detect_language(text: str) -> str:
 # =====================
 
 def get_gemini_response(user_message: str, user_id: str, language: str = "english") -> str:
-    """Get response from Gemini AI using the instructions"""
+    """Get response from Gemini AI for mobile app users"""
     try:
-        # Build context from user state
-        state = user_states.get(user_id, {})
+        # SIMPLE CONTEXT for mobile app users
+        context = f"""
+        You are RUDO, Dawa Health's Virtual Pregnancy Assistant.
         
-        # Get recent chat history
-        chat_history = state.get('chat_history', [])
-        recent_messages = []
-        if chat_history:
-            for msg in chat_history[-4:]:  # Last 4 messages
-                if isinstance(msg, dict):
-                    role = msg.get('role', '')
-                    content = msg.get('message', '') or msg.get('content', '')
-                    if role and content:
-                        recent_messages.append(f"{role.upper()}: {content}")
+        USER MESSAGE: "{user_message}"
         
-        # Create structured context
-        context_parts = []
+        USER CONTEXT:
+        - This user is using the Dawa Mom mobile app
+        - They are already registered in the system
+        - User ID: {user_id}
+        - Language: {language}
         
-        # 1. Core Identity and Instructions
-        context_parts.append("""You are RUDO, Dawa Health's Virtual Pregnancy and Maternal Health Assistant.
-Your role is to provide helpful, accurate, and empathetic information about pregnancy, maternal health, and related topics.
-IMPORTANT: You must respond as RUDO, not as an AI model. Use first person ("I", "me", "my").
-Key guidelines:
-- Provide general health information but ALWAYS recommend consulting healthcare professionals for personal medical advice
-- For emergencies, advise immediate medical attention
-- Be supportive, understanding, and professional
-- Focus on maternal health, pregnancy, women's wellness
-- You can discuss products/services available at Dawa Health""")
+        YOUR ROLE:
+        - Provide helpful pregnancy and maternal health information
+        - Be empathetic and supportive
+        - Recommend professional medical advice for personal concerns
+        - Mention Dawa Health services if relevant
         
-        # 2. Available Products/Services (formatted properly)
-        if isinstance(products_data, dict) and products_data:
-            context_parts.append("DAWA HEALTH PRODUCTS & SERVICES:")
-            for category, items in products_data.items():
-                context_parts.append(f"{category}:")
-                for item in items[:3]:  # Limit to 3 items per category
-                    context_parts.append(f"  • {item.get('name', '')}: {item.get('description', '')} - Price: {item.get('price', '')}")
-        else:
-            context_parts.append("DAWA HEALTH SERVICES: Ultrasound, Blood tests, Birth kits, Consultations, STI screening, Contraceptives")
+        IMPORTANT FOR MOBILE APP:
+        - DO NOT ask for registration or phone numbers
+        - DO NOT generate DH- IDs
+        - User is already authenticated in the app
+        - Focus on answering their health questions
         
-        # 3. Pregnancy Information
-        if maternal_map and language in maternal_map:
-            preg_data = maternal_map[language]
-            if isinstance(preg_data, dict):
-                context_parts.append("PREGNANCY INFORMATION AVAILABLE: Yes")
-            elif isinstance(preg_data, str):
-                # Take a small excerpt if it's a string
-                excerpt = preg_data[:300] + "..." if len(preg_data) > 300 else preg_data
-                context_parts.append(f"PREGNANCY INFO EXCERPT: {excerpt}")
+        RESPOND AS RUDO in a friendly, helpful way.
+        """
         
-        # 4. Recent Conversation
-        if recent_messages:
-            context_parts.append("RECENT CONVERSATION:")
-            context_parts.extend(recent_messages)
+        logging.info(f"Context for {user_id}: {context[:200]}...")
         
-        # 5. User's Current Message
-        context_parts.append(f"USER MESSAGE: {user_message}")
-        
-        # 6. Response Format
-        context_parts.append("""RESPONSE FORMAT: 
-- Respond as RUDO
-- Be conversational and helpful
-- Ask follow-up questions if needed
-- Provide information based on available knowledge
-- If unsure, say so and suggest consulting a healthcare provider""")
-        
-        # Combine context
-        context = "\n\n".join(context_parts)
-        
-        # Log for debugging
-        logging.info(f"Context built for user {user_id}")
-        logging.info(f"Context length: {len(context)} chars")
-        logging.info(f"User message: {user_message}")
-        
-        # Call Gemini
         model = genai.GenerativeModel(MODEL_NAME)
         response = model.generate_content(context)
         
-        # Log the response
         if response and response.text:
-            logging.info(f"Gemini response: {response.text[:150]}...")
+            logging.info(f"Response: {response.text[:100]}...")
+            return response.text.strip()
         else:
-            logging.warning("Empty response from Gemini")
-            return "Hello! I'm Rudo, Dawa Health's pregnancy assistant. I'm here to help with your maternal health questions. How can I assist you today?"
-        
-        # Update chat sessions
-        if user_id not in chat_sessions:
-            chat_sessions[user_id] = []
-        
-        chat_sessions[user_id].append({
-            "role": "user",
-            "content": user_message,
-            "timestamp": datetime.now().isoformat()
-        })
-        
-        chat_sessions[user_id].append({
-            "role": "assistant",
-            "content": response.text,
-            "timestamp": datetime.now().isoformat()
-        })
-        
-        # Limit history
-        if len(chat_sessions[user_id]) > 20:
-            chat_sessions[user_id] = chat_sessions[user_id][-20:]
-        
-        return response.text.strip()
-        
+            return "Hello! I'm Rudo, Dawa Health's pregnancy assistant. How can I help you today?"
+            
     except Exception as e:
         logging.error(f"Gemini error: {e}")
-        # Return a friendly fallback response
-        return """Hello! I'm Rudo, Dawa Health's Virtual Pregnancy Assistant. I'm here to help you with pregnancy questions, maternal health information, and general wellness advice.
-
-How can I assist you today? You can ask me about:
-• Pregnancy symptoms and stages
-• Maternal health tips
-• Services available at Dawa Health
-• General wellness questions
-
-What would you like to know?"""
-
+        return "Hello! I'm Rudo. I'm here to help with pregnancy and maternal health questions. What would you like to know?"
+            
 
 # =====================
 # Firestore Helpers
@@ -509,6 +433,7 @@ if __name__ == "__main__":
     load_user_states()
     port = int(os.environ.get("PORT", 8000))
     app.run(host="0.0.0.0", port=port, debug=True)
+
 
 
 
