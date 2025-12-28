@@ -1,4 +1,4 @@
-cervical_cancer_data = (
+cervical_cancer_data = ( 
 "**Category-Cervical Cancer FAQs**\n"
 "*Question 1:*\n"
 "-  What is cervical cancer? \n"
