@@ -284,23 +284,36 @@ def detect_language(message, current_lang="english"):
             if re.search(rf"\b{re.escape(kw)}\b", message_lower):
                 scores[lang] = scores.get(lang, 0) + 3
 
+    # Common English filler words (how/please/help/...) show up inside
+    # otherwise-local-language messages too, and used to tie with the real
+    # signal — which then defaulted to staying "english". Any clear,
+    # UNIQUE non-English top scorer should win over an English tie.
+    non_english_scores = {l: s for l, s in scores.items() if l != "english" and s > 0}
+    if non_english_scores:
+        top_score = max(non_english_scores.values())
+        candidates = [l for l, s in non_english_scores.items() if s == top_score]
+        if len(candidates) == 1 and top_score >= scores.get("english", 0):
+            return candidates[0]
+
+    # Weak or ambiguous local signal (including none at all) — ask the
+    # Gemini classifier rather than silently defaulting to English.
+    words_in_msg = re.findall(r"[a-z]+", message_lower)
+    if len(words_in_msg) >= 2:
+        guess = _llm_detect_language(message)
+        if guess:
+            return guess
+
     max_score = max(scores.values()) if scores else 0
     if max_score > 0:
         top_langs = [lang for lang, s in scores.items() if s == max_score]
         if current_lang in top_langs:
             return current_lang
-        if len(top_langs) == 1 and max_score >= 5:
+        if len(top_langs) == 1:
             return top_langs[0]
         return current_lang
 
-    words_in_msg = re.findall(r"[a-z]+", message_lower)
-    if len(words_in_msg) >= 3:
-        guess = _llm_detect_language(message)
-        if guess:
-            return guess
-
     if all(ord(c) < 128 for c in message_lower):
-        return current_lang if current_lang != "english" else "english"
+        return current_lang
 
     return "english"
 
@@ -344,12 +357,12 @@ WEEK_MARKER = {
 # ─────────────────────────────────────────────
 
 LANG_ENFORCE = {
-    "shona": "Pindura muchiShona chete.",
-    "ndebele": "Phendula ngesiNdebele kuphela.",
-    "chinyanja": "Yankhani mu Chinyanja basi.",
-    "lozi": "Arabela ka Silozi feela.",
-    "bemba": "Yasuka mu Cibemba fye.",
-    "tonga": "Mupandule mu Chitonga buyo.",
+    "shona": "Pindura muchiShona chete. (Respond ONLY in Shona — do not use English.)",
+    "ndebele": "Phendula ngesiNdebele kuphela. (Respond ONLY in Ndebele — do not use English.)",
+    "chinyanja": "Yankhani mu Chinyanja basi. (Respond ONLY in Chinyanja/Nyanja — do not use English.)",
+    "lozi": "Arabela ka Silozi feela. (Respond ONLY in Lozi — do not use English.)",
+    "bemba": "Yasuka mu Cibemba fye. (Respond ONLY in Bemba — do not use English.)",
+    "tonga": "Mupandule mu Chitonga buyo. (Respond ONLY in Tonga — do not use English.)",
     "english": "Respond in English only.",
 }
 
@@ -385,11 +398,13 @@ def ask_gemini(question, lang, user_id, topic_hint=""):
     context = build_context(user_id)
 
     prompt = (
+        f"IMPORTANT LANGUAGE INSTRUCTION: {lang_enforce}\n\n"
         f"{BASE_INSTRUCTIONS}\n\n"
         f"{topic_hint}\n\n"
         f"{context}"
         f"Current question: {question}\n\n"
-        f"{lang_enforce} Do not start with filler words like 'Okay' or 'Sure' — answer directly. "
+        f"REMINDER — {lang_enforce} "
+        f"Do not start with filler words like 'Okay' or 'Sure' — answer directly. "
         f"Keep it concise (a short paragraph or a few bullet points)."
     )
 
