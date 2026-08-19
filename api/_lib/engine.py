@@ -112,7 +112,7 @@ def _state_key(user_id):
 def load_user_state(user_id):
     default = {
         "step": "main_menu",
-        "language": "english",
+        "language": None,
         "topic": None,
         "cart": [],
         "first_message": True,
@@ -202,7 +202,16 @@ def _contains_signal(prompt_lower, phrases):
 
 
 # ─────────────────────────────────────────────
-#  Language detection (keyword scoring + Gemini fallback)
+#  Language detection — Gemini-first.
+#
+#  Gemini is now the primary detector for every non-trivial message. The
+#  keyword/phrase tables below are kept only as (a) a zero-latency exact-match
+#  shortcut for common greeting words, and (b) an offline fallback used ONLY
+#  if the Gemini classification call itself fails (network/API error), so the
+#  bot never silently guesses a language. There is intentionally no hard
+#  default language anymore — if nothing can be determined, we fall back to
+#  whatever language the conversation was already in (current_lang, which may
+#  be None on a brand-new conversation).
 # ─────────────────────────────────────────────
 
 EXACT_MATCHES = {
@@ -260,15 +269,10 @@ def _llm_detect_language(message):
         return None
 
 
-def detect_language(message, current_lang="english"):
-    message_lower = message.lower().strip()
-    if not message_lower or message_lower.isdigit():
-        return current_lang
-
-    for lang, words in EXACT_MATCHES.items():
-        if message_lower in words:
-            return lang
-
+def _keyword_fallback_detect(message_lower, current_lang):
+    """Offline heuristic used ONLY if the Gemini classifier call fails.
+    Never returns a hard-coded default — falls back to current_lang (which
+    may be None) when nothing scores."""
     scores = {lang: 0 for lang in LANGUAGE_KEYWORDS}
     for lang, phrases in LANGUAGE_PHRASES.items():
         for phrase in phrases:
@@ -279,38 +283,40 @@ def detect_language(message, current_lang="english"):
             if re.search(rf"\b{re.escape(kw)}\b", message_lower):
                 scores[lang] = scores.get(lang, 0) + 3
 
-    # Common English filler words (how/please/help/...) show up inside
-    # otherwise-local-language messages too, and used to tie with the real
-    # signal — which then defaulted to staying "english". Any clear,
-    # UNIQUE non-English top scorer should win over an English tie.
-    non_english_scores = {l: s for l, s in scores.items() if l != "english" and s > 0}
-    if non_english_scores:
-        top_score = max(non_english_scores.values())
-        candidates = [l for l, s in non_english_scores.items() if s == top_score]
-        if len(candidates) == 1 and top_score >= scores.get("english", 0):
-            return candidates[0]
-
-    # Weak or ambiguous local signal (including none at all) — ask the
-    # Gemini classifier rather than silently defaulting to English.
-    words_in_msg = re.findall(r"[a-z]+", message_lower)
-    if len(words_in_msg) >= 2:
-        guess = _llm_detect_language(message)
-        if guess:
-            return guess
-
     max_score = max(scores.values()) if scores else 0
-    if max_score > 0:
-        top_langs = [lang for lang, s in scores.items() if s == max_score]
-        if current_lang in top_langs:
-            return current_lang
-        if len(top_langs) == 1:
-            return top_langs[0]
+    if max_score == 0:
         return current_lang
 
-    if all(ord(c) < 128 for c in message_lower):
+    top_langs = [lang for lang, s in scores.items() if s == max_score]
+    if current_lang in top_langs:
+        return current_lang
+    if len(top_langs) == 1:
+        return top_langs[0]
+    return current_lang
+
+
+def detect_language(message, current_lang=None):
+    """Detect the language of `message`, asking Gemini for every real
+    (non-empty, non-numeric) message. `current_lang` may be None for a
+    brand-new conversation — there is no hard-coded default language."""
+    message_lower = message.lower().strip()
+    if not message_lower or message_lower.isdigit():
         return current_lang
 
-    return "english"
+    # Zero-latency shortcut for exact greeting/common-word matches — this is
+    # an optimization, not a substitute for the classifier on real messages.
+    for lang, words in EXACT_MATCHES.items():
+        if message_lower in words:
+            return lang
+
+    # Gemini is the primary detector.
+    guess = _llm_detect_language(message)
+    if guess:
+        return guess
+
+    # Gemini call failed (e.g. network/API error) — fall back to keyword
+    # scoring rather than silently assuming a language.
+    return _keyword_fallback_detect(message_lower, current_lang)
 
 
 # ─────────────────────────────────────────────
@@ -750,7 +756,7 @@ def process_chat(user_id, message, forced_lang=None):
     if forced_lang in SUPPORTED_LANGUAGES:
         state["language"] = forced_lang
     else:
-        state["language"] = detect_language(message, state.get("language", "english"))
+        state["language"] = detect_language(message, state.get("language"))
     state["first_message"] = False
 
     append_conversation(user_id, "user", message)
@@ -779,7 +785,7 @@ def get_history(user_id, limit=50):
 
 
 def reset_state(user_id):
-    state = {"step": "main_menu", "language": "english", "topic": None, "cart": [], "first_message": True}
+    state = {"step": "main_menu", "language": None, "topic": None, "cart": [], "first_message": True}
     save_user_state(user_id, state)
     return {"status": "ok", "user_id": user_id}
 
