@@ -18,9 +18,15 @@ JSON blob — so it scales past a handful of users.
 
 import os
 import re
+import sys
 import json
 import logging
 from datetime import datetime
+
+# Vercel's Python runtime imports this file via importlib without adding its
+# own directory to sys.path, so the sibling `_lib` package wouldn't resolve
+# without this. Must run before any `from _lib...` import below.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from flask import Flask, request, jsonify
 import google.generativeai as genai
