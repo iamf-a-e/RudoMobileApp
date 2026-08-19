@@ -2,13 +2,28 @@
 Dawa Health — Mobile Chat Engine (shared logic)
 =================================================
 This module holds ALL the conversation logic (language detection, pregnancy
-week lookup, cervical cancer Q&A, shop/ordering, Gemini calls, Redis state).
+week Q&A, cervical cancer Q&A, shop/ordering, Gemini calls, Redis state).
 
 It has NO Flask app / routes of its own — each file directly under /api/
 (chat.py, health.py, etc.) is a thin wrapper that imports this module, so
 every route is its own physical file matching Vercel's native zero-config
 Python routing. This avoids relying on vercel.json rewrites, which behave
 unpredictably in mixed Next.js + Python projects.
+
+CHANGE LOG (this revision)
+---------------------------
+Gemini now drives the pregnancy-week and cervical-cancer conversations in
+every supported language (previously those flows were a rigid "type a
+number" state machine and never touched Gemini at all). Gemini's answers
+for those two topics are grounded: we pull the relevant chunk(s) out of the
+existing pregnancy_data_*/cervical_cancer_data_* files and hand them to
+Gemini as reference material with an explicit "use only this" instruction,
+instead of letting it answer from open-ended knowledge.
+
+The shop/ordering flow (cart, quantities, address, saved orders) is
+untouched and stays fully scripted — it deals in exact prices and order
+state, which is exactly the kind of thing you don't want an LLM
+paraphrasing.
 """
 
 import os
@@ -115,6 +130,7 @@ def load_user_state(user_id):
         "language": "english",
         "topic": None,
         "cart": [],
+        "current_week": None,
         "first_message": True,
     }
     if not redis_client:
@@ -416,6 +432,115 @@ def ask_gemini(question, lang, user_id, topic_hint=""):
 
 
 # ─────────────────────────────────────────────
+#  Grounding helpers — pull the relevant chunk(s) out of the existing
+#  pregnancy_data_*/cervical_cancer_data_* files so Gemini answers from
+#  our own content instead of its open-ended knowledge.
+# ─────────────────────────────────────────────
+
+def extract_week_number(message):
+    """Pull a plausible pregnancy-week number (1-40) out of free text."""
+    for m in re.finditer(r"\b(\d{1,2})\b", message):
+        n = int(m.group(1))
+        if 1 <= n <= 40:
+            return n
+    return None
+
+
+def _parse_week_entries(info_text, marker):
+    """Split the raw pregnancy_data text into (week_num, content) pairs."""
+    pattern = rf"\*{re.escape(marker)} (\d+):(.*?)(?=\*{re.escape(marker)} \d+:|\Z)"
+    return [(int(num), content.strip()) for num, content in re.findall(pattern, info_text, re.S)]
+
+
+def build_pregnancy_grounding(message, lang, state):
+    """
+    Return (grounding_text, matched_week) for the pregnancy topic.
+    Prefers an explicit week number in this message, then falls back to the
+    week last discussed, then a light keyword match across all weeks.
+    """
+    marker = WEEK_MARKER.get(lang, "Week")
+    info_text = get_pregnancy_data(lang)
+    entries = _parse_week_entries(info_text, marker)
+    if not entries:
+        return "", None
+
+    week = extract_week_number(message)
+    if week is None:
+        # No new week mentioned — if the user is following up ("what about
+        # symptoms?") stick with the week they were just on.
+        week = state.get("current_week")
+
+    if week:
+        match = next(((n, c) for n, c in entries if n == week), None)
+        if match:
+            state["current_week"] = match[0]
+            return f"*{marker} {match[0]}:{match[1]}", match[0]
+
+    # No usable week — light keyword overlap against all week entries so we
+    # can still hand Gemini something relevant if the question names a
+    # symptom, food, milestone, etc.
+    words = set(re.findall(r"[a-z]+", message.lower()))
+    scored = []
+    for n, c in entries:
+        overlap = len(words & set(re.findall(r"[a-z]+", c.lower())))
+        if overlap:
+            scored.append((overlap, n, c))
+    scored.sort(key=lambda x: x[0], reverse=True)
+    top = scored[:3]
+    if top:
+        text = "\n\n".join(f"*{marker} {n}:{c}" for _, n, c in top)
+        return text, None
+    return "", None
+
+
+def _parse_qa_entries(data):
+    """
+    cervical_cancer_data is a flat list where a '*Question N: ...*' item is
+    normally followed by its answer item — pair them up.
+    """
+    pairs = []
+    i = 0
+    while i < len(data):
+        item = str(data[i])
+        m = re.search(r"\*Question (\d+):", item)
+        if m:
+            qnum = int(m.group(1))
+            answer = ""
+            if i + 1 < len(data) and "Answer" in str(data[i + 1]):
+                answer = str(data[i + 1])
+                i += 1
+            pairs.append((qnum, item, answer))
+        i += 1
+    return pairs
+
+
+def build_cervical_grounding(message):
+    """Return grounding text for the cervical-cancer topic: an explicit
+    question number if named, otherwise the best keyword-matched Q&A pairs."""
+    data = get_cervical_data("english")  # source data is keyed by question number regardless of language
+    pairs = _parse_qa_entries(data)
+    if not pairs:
+        return ""
+
+    m = re.search(r"\b(\d{1,3})\b", message)
+    if m:
+        qnum = int(m.group(1))
+        match = next((p for p in pairs if p[0] == qnum), None)
+        if match:
+            return f"{match[1]}\n{match[2]}"
+
+    words = set(re.findall(r"[a-z]+", message.lower()))
+    scored = []
+    for qnum, q, a in pairs:
+        overlap = len(words & set(re.findall(r"[a-z]+", (q + " " + a).lower())))
+        if overlap:
+            scored.append((overlap, q, a))
+    scored.sort(key=lambda x: x[0], reverse=True)
+    top = scored[:3]
+    return "\n\n".join(f"{q}\n{a}" for _, q, a in top)
+
+
+# ─────────────────────────────────────────────
 #  Conversation engine
 #  Each handler appends to `out` (list of strings) instead of calling a
 #  WhatsApp send() — the API layer joins them into one reply.
@@ -444,50 +569,6 @@ def greet_text(lang):
         "tonga": "Mwabuka buti! Ndime Rudo, wakugwasya wa Dawa Health. Nga ndamugwasya buti sunu?",
         "bemba": "Muli shani! Nine Rudo, wakufwailisha wa Dawa Health. Bushe kuti namwafwa shani lelo?",
     }.get(lang, "Hello! I'm Rudo, Dawa Health's virtual assistant. How can I help you today?")
-
-
-def ask_week_text(lang):
-    return {
-        "shona": "Ndapota isa vhiki rako repamuviri (1-40).",
-        "ndebele": "Sicela ufake iviki lakho lokukhulelwa (1-40).",
-        "chinyanja": "Chonde lowetsani sabata lanu la pakati (1-40).",
-        "lozi": "Ndapota faka linomolo la viki ya ku imelela mwana (1-40).",
-        "tonga": "Amubike namba yamaviki aanu (1-40).",
-        "bemba": "Ingishenimo umulungu wenu uwa pabukulu (1-40).",
-    }.get(lang, "Please enter your pregnancy week number (1-40).")
-
-
-def week_not_found_text(lang, week):
-    return {
-        "shona": f"Hapana ruzivo rwevhiki {week}.",
-        "ndebele": f"Alukho ulwazi lwe-iviki {week}.",
-        "chinyanja": f"Palibe zambiri za sabata {week}.",
-        "lozi": f"Ha ku na taba za sunda {week}.",
-        "tonga": f"Kunyina zinji zya wiiki {week}.",
-        "bemba": f"Tapali ifilifyonse pa mulungu {week}.",
-    }.get(lang, f"No data available for week {week}.")
-
-
-def another_week_text(lang):
-    return {
-        "shona": "Ungada here kudzidza nezve rimwe vhiki repamuviri?",
-        "ndebele": "Ungathanda ukufunda ngelinye iviki lokukhulelwa?",
-        "chinyanja": "Kodi mukufuna kudziwa za sabata lina la pakati?",
-        "lozi": "Kana u bata ku ithuta ka za sunda ye ñwi ya buimana?",
-        "tonga": "Mulakonzya kuyanda kuzyiba zya wiiki imwi ya bubulemi?",
-        "bemba": "Kuti mwafwaya ukwishiba pa mulungu umbi uwa pabukulu?",
-    }.get(lang, "Would you like to learn about another pregnancy week?")
-
-
-def keep_learning_text(lang):
-    return {
-        "shona": "Ungada here kuramba uchidzidza zvimwe zvecervical cancer?",
-        "ndebele": "Ungathanda ukuqhubeka nokufunda okunye nge-cervical cancer?",
-        "chinyanja": "Kodi mukufuna kupitiriza kuphunzira zambiri za cervical cancer?",
-        "lozi": "Kana u bata ku zwelapili ku ithuta ze ñwi ka za kankere ya sibeleko?",
-        "tonga": "Mulakonzya kuyanda kwiya zimwi zya kansa ya mulomo wa cibeleko?",
-        "bemba": "Bushe ulefwaya ukukonkanyapo ukusambililapo ifingi pali cervical cancer?",
-    }.get(lang, "Would you like to keep learning about cervical cancer?")
 
 
 def shop_categories_text(lang):
@@ -536,85 +617,11 @@ def handle_turn(user_id, message, state, out):
     is_greeting = _contains_signal(prompt_lower, GREETING_WORDS)
     is_reset = _contains_signal(prompt_lower, RESET_KEYWORDS)
     if is_greeting or is_reset:
-        state.update({"step": "main_menu", "topic": None, "cart": state.get("cart", [])})
+        state.update({"step": "main_menu", "topic": None, "current_week": None, "cart": state.get("cart", [])})
         out.append(greet_text(lang))
         return
 
-    # ---- pregnancy week flow ----
-    if step == "ask_week":
-        digits = re.sub(r"\D", "", prompt_lower)
-        if digits and 1 <= int(digits) <= 40:
-            week = int(digits)
-            marker = WEEK_MARKER.get(lang, "Week")
-            info_text = get_pregnancy_data(lang)
-            pattern = rf"\*{marker} {week}:.*?(?=\*{marker} {week + 1}:|\Z)"
-            match = re.search(pattern, info_text, re.S)
-            if match:
-                out.append(match.group(0).strip())
-            else:
-                out.append(week_not_found_text(lang, week))
-            out.append(another_week_text(lang))
-            state["step"] = "ask_another_week"
-        else:
-            out.append(ask_week_text(lang))
-        return
-
-    if step == "ask_another_week":
-        if _contains_signal(prompt_lower, YES_WORDS):
-            state["step"] = "ask_week"
-            out.append(ask_week_text(lang))
-        elif _contains_signal(prompt_lower, NO_WORDS):
-            state["step"] = "main_menu"
-            state["topic"] = None
-            out.append(ask_gemini(
-                "The user is done learning about pregnancy weeks for now — ask if there's "
-                "anything else you can help with today.",
-                lang, user_id,
-            ))
-        else:
-            out.append(another_week_text(lang))
-        return
-
-    # ---- cervical cancer flow ----
-    if step == "cervical_question_number":
-        digits = re.sub(r"\D", "", prompt_lower)
-        if digits and 1 <= int(digits) <= 100:
-            qnum = int(digits)
-            data = get_cervical_data(lang)
-            found = False
-            for i, item in enumerate(data):
-                if f"*Question {qnum}:" in str(item):
-                    content = str(item)
-                    if i + 1 < len(data) and "Answer" in str(data[i + 1]):
-                        content += "\n" + str(data[i + 1])
-                    out.append(content)
-                    found = True
-                    break
-            if not found:
-                out.append(f"Sorry, I couldn't find question number {qnum}. Try 1-{len(data) // 2 or 1}.")
-            out.append(keep_learning_text(lang))
-            state["step"] = "keep_learning"
-        else:
-            out.append("Please enter a question number between 1 and 100.")
-        return
-
-    if step == "keep_learning":
-        if _contains_signal(prompt_lower, YES_WORDS):
-            state["step"] = "cervical_question_number"
-            out.append("Enter a question number from 1 to 100:")
-        elif _contains_signal(prompt_lower, NO_WORDS):
-            state["step"] = "main_menu"
-            state["topic"] = None
-            out.append(ask_gemini(
-                "The user is done learning about cervical cancer for now — ask if there's "
-                "anything else you can help with today.",
-                lang, user_id,
-            ))
-        else:
-            out.append(keep_learning_text(lang))
-        return
-
-    # ---- shop flow ----
+    # ---- shop flow (scripted — exact prices/cart, no Gemini) ----
     if step == "shop_browse":
         if prompt_lower.isdigit():
             categories = list(products_by_category.keys())
@@ -712,31 +719,62 @@ def handle_turn(user_id, message, state, out):
         lines.append(f"\n📍 Delivery address: {address}")
         lines.append("We'll be in touch shortly. Thank you! 😊")
         out.append("\n".join(lines))
-        state.update({"step": "main_menu", "topic": None, "cart": []})
+        state.update({"step": "main_menu", "topic": None, "current_week": None, "cart": []})
         return
 
-    # ---- main menu / topic routing ----
+    # ---- shop entry point ----
     if _contains_signal(prompt_lower, SHOP_KEYWORDS):
         state["step"] = "shop_browse"
         out.append(shop_categories_text(lang))
         return
 
-    if _contains_signal(prompt_lower, MATERNAL_KEYWORDS):
+    # ---- pregnancy / maternal topic — Gemini, grounded in pregnancy_data ----
+    if _contains_signal(prompt_lower, MATERNAL_KEYWORDS) or state.get("topic") == "maternal":
         state["topic"] = "maternal"
-        state["step"] = "ask_week"
-        out.append(ask_week_text(lang))
+        state["step"] = "topic_chat"
+        grounding, week = build_pregnancy_grounding(message, lang, state)
+        if grounding:
+            hint = (
+                "Topic: pregnancy / maternal health. Base your answer ONLY on the reference "
+                "information below — do not invent facts beyond it. If the user hasn't named "
+                "a pregnancy week and the reference doesn't cover their question, say so briefly "
+                "and answer generally and safely. After answering, you may naturally invite them "
+                "to ask about another week or topic.\n\nReference:\n" + grounding
+            )
+        else:
+            hint = (
+                "Topic: pregnancy / maternal health. The user hasn't specified a pregnancy week "
+                "and nothing in the reference data matched their question — ask which week of "
+                "pregnancy they are in so you can give week-specific guidance, or answer generally "
+                "and safely if the question isn't week-specific."
+            )
+        out.append(ask_gemini(message, lang, user_id, topic_hint=hint))
         return
 
-    if _contains_signal(prompt_lower, CERVICAL_KEYWORDS):
+    # ---- cervical cancer topic — Gemini, grounded in cervical_cancer_data ----
+    if _contains_signal(prompt_lower, CERVICAL_KEYWORDS) or state.get("topic") == "cervical":
         state["topic"] = "cervical"
-        out.append(ask_gemini(message, lang, user_id, topic_hint="Topic: cervical cancer."))
-        out.append(keep_learning_text(lang))
-        state["step"] = "keep_learning"
+        state["step"] = "topic_chat"
+        grounding = build_cervical_grounding(message)
+        if grounding:
+            hint = (
+                "Topic: cervical cancer. Base your answer ONLY on the reference Q&A below — do "
+                "not invent medical facts beyond it. After answering, you may naturally invite "
+                "the user to ask another cervical-cancer question.\n\nReference:\n" + grounding
+            )
+        else:
+            hint = (
+                "Topic: cervical cancer. Nothing in the reference data closely matched this "
+                "question — answer helpfully and safely, keep it general, and suggest they see "
+                "a healthcare provider for anything specific to their situation."
+            )
+        out.append(ask_gemini(message, lang, user_id, topic_hint=hint))
         return
 
-    # general fallback via Gemini
-    out.append(ask_gemini(message, lang, user_id))
+    # ---- general fallback via Gemini ----
+    state["topic"] = None
     state["step"] = "main_menu"
+    out.append(ask_gemini(message, lang, user_id))
 
 
 # ─────────────────────────────────────────────
@@ -779,7 +817,7 @@ def get_history(user_id, limit=50):
 
 
 def reset_state(user_id):
-    state = {"step": "main_menu", "language": "english", "topic": None, "cart": [], "first_message": True}
+    state = {"step": "main_menu", "language": "english", "topic": None, "current_week": None, "cart": [], "first_message": True}
     save_user_state(user_id, state)
     return {"status": "ok", "user_id": user_id}
 
