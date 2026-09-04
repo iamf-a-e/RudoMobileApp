@@ -41,6 +41,11 @@ from _lib.instructions import (
     company_website,
     company_phone,
 )
+from _lib.sahara_client import (
+    transcribe_audio,
+    VOICE_SUPPORTED_LANGUAGES,
+    get_voice_unsupported_response,
+)
 
 logging.basicConfig(level=logging.INFO)
 
@@ -799,6 +804,39 @@ def process_chat(user_id, message, forced_lang=None):
     } 
 
 
+def process_voice_chat(user_id, audio_bytes, filename="voice_note", mime_type="audio/wav"):
+    """
+    Voice equivalent of process_chat: audio in, text reply out.
+
+    Sahara's TTS voice list only covers english/shona out of our seven
+    supported languages — see VOICE_SUPPORTED_LANGUAGES in sahara_client.
+    A user whose known language isn't voice-supported gets an English
+    apology + redirect to text, without ever calling Sahara. A brand-new
+    user (state defaults to "english") will pass the gate on their very
+    first voice message even if they actually speak an unsupported
+    language — that first transcription may come back poor/garbled; once
+    they've used text once, state["language"] is set correctly for future
+    voice notes.
+    """
+    state = load_user_state(user_id)
+    known_lang = state.get("language", "english")
+
+    if known_lang not in VOICE_SUPPORTED_LANGUAGES:
+        return get_voice_unsupported_response(known_lang)
+
+    transcript, file_id = transcribe_audio(audio_bytes, filename, mime_type, language_hint=known_lang)
+
+    if not transcript:
+        error_text = FALLBACK_MSG.get(known_lang, FALLBACK_MSG["english"])
+        return {"reply": error_text, "user_id": user_id, "error": "transcription_failed"}
+
+    # Reuse the full existing grounded text pipeline unchanged
+    result = process_chat(user_id, transcript, forced_lang=None)
+    result["transcript"] = transcript
+    result["sahara_file_id"] = file_id
+    return result
+
+
 def get_history(user_id, limit=50):
     return get_conversation(user_id)[-limit:]
 
@@ -817,5 +855,6 @@ def health_status():
         "redis": "connected" if redis_client else "not_configured",
         "firestore": "connected" if firestore_db else "not_configured",
         "gemini_key_present": bool(GEN_API),
+        "sahara_key_present": bool(os.environ.get("SAHARA_API_KEY")),
         "timestamp": datetime.now().isoformat(),
     }
