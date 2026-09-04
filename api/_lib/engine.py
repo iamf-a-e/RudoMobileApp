@@ -10,20 +10,7 @@ every route is its own physical file matching Vercel's native zero-config
 Python routing. This avoids relying on vercel.json rewrites, which behave
 unpredictably in mixed Next.js + Python projects.
 
-CHANGE LOG (this revision)
----------------------------
-Gemini now drives the pregnancy-week and cervical-cancer conversations in
-every supported language (previously those flows were a rigid "type a
-number" state machine and never touched Gemini at all). Gemini's answers
-for those two topics are grounded: we pull the relevant chunk(s) out of the
-existing pregnancy_data_*/cervical_cancer_data_* files and hand them to
-Gemini as reference material with an explicit "use only this" instruction,
-instead of letting it answer from open-ended knowledge.
 
-The shop/ordering flow (cart, quantities, address, saved orders) is
-untouched and stays fully scripted — it deals in exact prices and order
-state, which is exactly the kind of thing you don't want an LLM
-paraphrasing.
 """
 
 import os
