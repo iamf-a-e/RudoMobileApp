@@ -47,6 +47,11 @@ from _lib.sahara_client import (
     get_voice_unsupported_response,
 )
 
+from _lib.appointments import (
+    APPOINTMENT_KEYWORDS,
+    handle_appointment_turn,
+)
+
 logging.basicConfig(level=logging.INFO)
 
 # ─────────────────────────────────────────────
@@ -634,7 +639,16 @@ def handle_turn(user_id, message, state, out):
         out.append(greet_text(lang))
         return
 
-    # ---- shop flow (scripted — exact prices/cart, no Gemini) ----
+   
+        # ---- appointment booking / rescheduling ----
+    if (
+        _contains_signal(prompt_lower, APPOINTMENT_KEYWORDS)
+        or step.startswith("appt_")
+    ):
+        handle_appointment_turn(user_id, message, state, out, redis_client=redis_client)
+        return
+        
+         # ---- shop flow (scripted — exact prices/cart, no Gemini) ----
     if step == "shop_browse":
         if prompt_lower.isdigit():
             categories = list(products_by_category.keys())
