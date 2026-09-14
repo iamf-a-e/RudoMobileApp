@@ -120,6 +120,7 @@ def transcribe_audio(audio_bytes, filename="voice_note", mime_type="audio/wav", 
         return transcript, file_id
 
     except Exception as e:
+        logging.info(f"[transcribe_audio] audio_bytes size={len(audio_bytes)} mime={mime_type} filename={filename}")
         logging.error(f"[transcribe_audio] {type(e).__name__}: {e}")
         return None, None
 
