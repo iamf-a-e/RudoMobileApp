@@ -257,16 +257,37 @@ def _llm_detect_language(message):
         )
         model = genai.GenerativeModel(
             model_name=MODEL_NAME,
-            generation_config={"temperature": 0, "max_output_tokens": 10},
+            # Was 10 — too tight for gemini-2.5-flash, which can burn part of
+            # its output budget on reasoning/formatting overhead before the
+            # visible answer token, leading to MAX_TOKENS with zero parts.
+            generation_config={"temperature": 0, "max_output_tokens": 20},
             safety_settings=safety_settings,
         )
         response = model.generate_content(classifier_prompt)
-        guess = re.sub(r"[^a-z]", "", response.text.strip().lower())
+
+        candidates = getattr(response, "candidates", None) or []
+        if not candidates:
+            logging.warning("[_llm_detect_language] no candidates returned")
+            return None
+
+        candidate = candidates[0]
+        finish_reason = getattr(candidate, "finish_reason", None)
+        content = getattr(candidate, "content", None)
+        parts = getattr(content, "parts", None) if content else None
+
+        if not parts:
+            # e.g. finish_reason == 2 (MAX_TOKENS) with nothing generated yet.
+            # Not a crash — just no usable classification this time.
+            logging.info(f"[_llm_detect_language] empty response, finish_reason={finish_reason}")
+            return None
+
+        raw_text = "".join(getattr(p, "text", "") for p in parts)
+        guess = re.sub(r"[^a-z]", "", raw_text.strip().lower())
         return guess if guess in SUPPORTED_LANGUAGES else None
     except Exception as e:
         logging.error(f"[_llm_detect_language] {e}")
         return None
-
+        
 
 def detect_language(message, current_lang="english"):
     message_lower = message.lower().strip()
