@@ -97,6 +97,12 @@ def transcribe_audio(audio_bytes, filename="voice_note", mime_type="audio/wav", 
     try:
         resp = requests.post(SAHARA_UPLOAD_URL, headers=headers, files=files, data=data, timeout=15)
 
+        if not resp.ok:
+            logging.error(
+                f"[transcribe_audio] HTTP {resp.status_code} "
+                f"headers={dict(resp.headers)} body={resp.text[:2000]}"
+            )
+            
         if resp.status_code == 503:
             # Documented behavior: still processing after 120s — file_id
             # comes back in the body, poll Get File Status with it.
