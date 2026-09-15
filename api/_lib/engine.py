@@ -839,7 +839,7 @@ def process_chat(user_id, message, forced_lang=None):
     } 
 
 
-def process_voice_chat(user_id, audio_bytes, filename="voice_note", mime_type="audio/wav"):
+def process_voice_chat(user_id, audio_bytes, filename="voice_note", mime_type="audio/wav", language=None):
     """
     Voice equivalent of process_chat: audio in, text reply out.
 
