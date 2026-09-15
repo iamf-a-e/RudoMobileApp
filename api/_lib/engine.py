@@ -878,7 +878,7 @@ def process_voice_chat(user_id, audio_bytes, filename="voice_note", mime_type="a
         return {"reply": error_text, "user_id": user_id, "error": "transcription_failed"}
 
     # Reuse the full existing grounded text pipeline unchanged
-    result = process_chat(user_id, transcript, forced_lang=None)
+    result = process_chat(user_id, transcript, forced_lang=known_lang)
     result["transcript"] = transcript
     result["sahara_file_id"] = file_id
     return result
