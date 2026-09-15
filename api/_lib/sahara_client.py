@@ -11,36 +11,6 @@ for transcription — that returns ungrounded generic-LLM answers, not
 answers grounded in our own pregnancy_data / cervical_cancer_data content.
 We transcribe only (get_answer=FALSE), then hand the transcript to the
 existing engine.py pipeline (ask_gemini + our grounding helpers).
-
-CODE-SWITCHING NOTE (added while diagnosing "Rudo doesn't understand
-Shona/English code-switching" bug):
-  transcribe_audio always forces the ENTIRE audio clip to be decoded as a
-  single language via `use_language_asr_input` — whatever language_hint
-  (itself just the last language detect_language() settled on for this
-  user, in engine.py's Redis-backed state) resolves to. There is currently
-  no code-switching / auto-detect mode wired up here. For a user who mixes
-  English and Shona mid-utterance ("ndiri kuda ku-book appointment for
-  2pm"), forcing a single-language hint mangles whichever portion doesn't
-  match the hint — this looks exactly like generic STT noise/garbling but
-  is actually a language-hint mismatch, not a model-quality problem.
-
-  Intron (Sahara's vendor) released Sahara v2.5 in beta around August
-  2026 with genuine bilingual code-switching support across roughly a
-  dozen African-language pairs (confirmed: Zulu, Hausa, Swahili, Luganda,
-  Igbo, plus a Kinyarwanda/English/French trilingual model) — but as of
-  this writing it is UNCONFIRMED whether (a) that capability is available
-  on this specific endpoint (SAHARA_UPLOAD_URL, the general-purpose sync
-  upload endpoint) rather than only via a separate challenge/beta API
-  surface, and (b) whether Shona specifically is among the supported
-  code-switch pairs. Before changing use_language_asr_input logic here
-  (e.g. omitting it for auto-detect, or switching to a code-switch-aware
-  parameter/model), confirm both of those directly with Intron — this is
-  not something to guess at from public marketing material alone.
-
-  The logging added to transcribe_audio below records the resolved hint
-  actually sent per request, so real stuck transcripts can be checked
-  against it to confirm (or rule out) the forced-hint theory before
-  changing behavior.
 """
 
 import os
@@ -124,26 +94,8 @@ def transcribe_audio(audio_bytes, filename="voice_note", mime_type="audio/wav", 
     if sahara_lang:
         data["use_language_asr_input"] = sahara_lang
 
-    # DIAGNOSTIC: as of this writing, this always forces the ENTIRE audio
-    # clip to be decoded as a single language (whatever language_hint
-    # resolves to) — there is currently no code-switching / auto-detect
-    # mode wired up here. That's a real problem for users who mix English
-    # and Shona mid-utterance: a forced hint of "english" will mangle the
-    # Shona portions (and vice versa), which looks like generic STT noise
-    # but is actually a language-hint mismatch. This log line makes that
-    # visible per-request so it can be confirmed against real transcripts
-    # rather than assumed. See the CODE-SWITCHING NOTE at the top of this
-    # file before changing use_language_asr_input logic — check with
-    # Intron whether Sahara v2.5's code-switching support is available on
-    # this endpoint and covers Shona before assuming omitting the hint (or
-    # any other change) is the right fix.
-    logging.info(
-        f"[transcribe_audio] language_hint={language_hint} sahara_lang={sahara_lang} "
-        f"audio_bytes={len(audio_bytes)} mime_type={mime_type} filename={filename}"
-    )
-
     try:
-        resp = requests.post(SAHARA_UPLOAD_URL, headers=headers, files=files, data=data, timeout=125)
+        resp = requests.post(SAHARA_UPLOAD_URL, headers=headers, files=files, data=data, timeout=15)
 
         if not resp.ok:
             logging.error(
