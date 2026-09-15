@@ -846,15 +846,22 @@ def process_voice_chat(user_id, audio_bytes, filename="voice_note", mime_type="a
     Sahara's TTS voice list only covers english/shona out of our seven
     supported languages — see VOICE_SUPPORTED_LANGUAGES in sahara_client.
     A user whose known language isn't voice-supported gets an English
-    apology + redirect to text, without ever calling Sahara. A brand-new
-    user (state defaults to "english") will pass the gate on their very
-    first voice message even if they actually speak an unsupported
-    language — that first transcription may come back poor/garbled; once
-    they've used text once, state["language"] is set correctly for future
-    voice notes.
+    apology + redirect to text, without ever calling Sahara.
+
+    A brand-new user's state["language"] defaults to "english" in
+    load_user_state even though nothing has actually been detected yet.
+    That default is shared with text chat and shouldn't be flipped
+    globally — so instead, for voice specifically, an untested "english"
+    default (first_message still True) is treated as "shona" instead,
+    since Shona is far more likely for a first voice note here. Once the
+    user has said anything (text or voice), state["language"] reflects a
+    real detect_language() result and this override no longer applies.
     """
     state = load_user_state(user_id)
     known_lang = state.get("language", "english")
+
+    if known_lang == "english" and state.get("first_message", True):
+        known_lang = "shona"
 
     if known_lang not in VOICE_SUPPORTED_LANGUAGES:
         return get_voice_unsupported_response(known_lang)
@@ -870,7 +877,7 @@ def process_voice_chat(user_id, audio_bytes, filename="voice_note", mime_type="a
     result["transcript"] = transcript
     result["sahara_file_id"] = file_id
     return result
-
+    
 
 def get_history(user_id, limit=50):
     return get_conversation(user_id)[-limit:]
