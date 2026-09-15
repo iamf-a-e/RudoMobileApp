@@ -47,6 +47,11 @@ from _lib.sahara_client import (
     get_voice_unsupported_response,
 )
 
+from _lib.appointments import (
+    APPOINTMENT_KEYWORDS,
+    handle_appointment_turn,
+)
+
 logging.basicConfig(level=logging.INFO)
 
 # ─────────────────────────────────────────────
@@ -257,16 +262,37 @@ def _llm_detect_language(message):
         )
         model = genai.GenerativeModel(
             model_name=MODEL_NAME,
-            generation_config={"temperature": 0, "max_output_tokens": 10},
+            # Was 10 — too tight for gemini-2.5-flash, which can burn part of
+            # its output budget on reasoning/formatting overhead before the
+            # visible answer token, leading to MAX_TOKENS with zero parts.
+            generation_config={"temperature": 0, "max_output_tokens": 20},
             safety_settings=safety_settings,
         )
         response = model.generate_content(classifier_prompt)
-        guess = re.sub(r"[^a-z]", "", response.text.strip().lower())
+
+        candidates = getattr(response, "candidates", None) or []
+        if not candidates:
+            logging.warning("[_llm_detect_language] no candidates returned")
+            return None
+
+        candidate = candidates[0]
+        finish_reason = getattr(candidate, "finish_reason", None)
+        content = getattr(candidate, "content", None)
+        parts = getattr(content, "parts", None) if content else None
+
+        if not parts:
+            # e.g. finish_reason == 2 (MAX_TOKENS) with nothing generated yet.
+            # Not a crash — just no usable classification this time.
+            logging.info(f"[_llm_detect_language] empty response, finish_reason={finish_reason}")
+            return None
+
+        raw_text = "".join(getattr(p, "text", "") for p in parts)
+        guess = re.sub(r"[^a-z]", "", raw_text.strip().lower())
         return guess if guess in SUPPORTED_LANGUAGES else None
     except Exception as e:
         logging.error(f"[_llm_detect_language] {e}")
         return None
-
+        
 
 def detect_language(message, current_lang="english"):
     message_lower = message.lower().strip()
@@ -613,7 +639,16 @@ def handle_turn(user_id, message, state, out):
         out.append(greet_text(lang))
         return
 
-    # ---- shop flow (scripted — exact prices/cart, no Gemini) ----
+   
+        # ---- appointment booking / rescheduling ----
+    if (
+        _contains_signal(prompt_lower, APPOINTMENT_KEYWORDS)
+        or step.startswith("appt_")
+    ):
+        handle_appointment_turn(user_id, message, state, out, redis_client=redis_client)
+        return
+        
+         # ---- shop flow (scripted — exact prices/cart, no Gemini) ----
     if step == "shop_browse":
         if prompt_lower.isdigit():
             categories = list(products_by_category.keys())
@@ -804,38 +839,69 @@ def process_chat(user_id, message, forced_lang=None):
     } 
 
 
-def process_voice_chat(user_id, audio_bytes, filename="voice_note", mime_type="audio/wav"):
+def process_voice_chat(user_id, audio_bytes, filename="voice_note", mime_type="audio/wav", language=None):
     """
     Voice equivalent of process_chat: audio in, text reply out.
 
     Sahara's TTS voice list only covers english/shona out of our seven
     supported languages — see VOICE_SUPPORTED_LANGUAGES in sahara_client.
     A user whose known language isn't voice-supported gets an English
-    apology + redirect to text, without ever calling Sahara. A brand-new
-    user (state defaults to "english") will pass the gate on their very
-    first voice message even if they actually speak an unsupported
-    language — that first transcription may come back poor/garbled; once
-    they've used text once, state["language"] is set correctly for future
-    voice notes.
+    apology + redirect to text, without ever calling Sahara.
+
+    A brand-new user's state["language"] defaults to "english" in
+    load_user_state even though nothing has actually been detected yet.
+    That default is shared with text chat and shouldn't be flipped
+    globally — so instead, for voice specifically, an untested "english"
+    default (first_message still True) is treated as "shona" instead,
+    since Shona is far more likely for a first voice note here. Once the
+    user has said anything (text or voice), state["language"] reflects a
+    real detect_language() result and this override no longer applies.
     """
     state = load_user_state(user_id)
     known_lang = state.get("language", "english")
 
+    logging.info(
+        f"[process_voice_chat] user_id={user_id} known_lang={known_lang} "
+        f"first_message={state.get('first_message', True)}"
+    )
+
+    if known_lang == "english" and state.get("first_message", True):
+        known_lang = "shona"
+
     if known_lang not in VOICE_SUPPORTED_LANGUAGES:
         return get_voice_unsupported_response(known_lang)
 
-    transcript, file_id = transcribe_audio(audio_bytes, filename, mime_type, language_hint=known_lang)
+    # Always hint Shona — handles code-switched Shona/English better,
+# and ensures Rudo responds in Shona regardless of stored language
+    transcript, file_id = transcribe_audio(audio_bytes, filename, mime_type, language_hint="shona")
 
-    if not transcript:
+    # Force state language to Shona after voice transcription
+    state["language"] = "shona"
+    save_user_state(user_id, state)
+
+    # FIX: `transcript` can come back as whitespace-only (e.g. "\n") on a
+    # failed/garbled Sahara transcription rather than a clean empty string
+    # or None. `if not transcript:` doesn't catch that case — "\n" is
+    # truthy — so a whitespace-only transcript used to fall through into
+    # process_chat() as if it were a real user message. That produced two
+    # problems: (1) it skipped the clean, already-language-aware
+    # FALLBACK_MSG[known_lang] response below, and (2) ask_gemini() would
+    # get called with an effectively blank "Current question" but with
+    # prior (possibly also-garbled) conversation history still injected
+    # via build_context(), which could pull Gemini into responding to
+    # stale/garbled context in the wrong language. Checking
+    # `transcript.strip()` closes that gap so any non-substantive
+    # transcription result reliably takes the fallback path instead.
+    if not transcript or not transcript.strip():
         error_text = FALLBACK_MSG.get(known_lang, FALLBACK_MSG["english"])
         return {"reply": error_text, "user_id": user_id, "error": "transcription_failed"}
 
     # Reuse the full existing grounded text pipeline unchanged
-    result = process_chat(user_id, transcript, forced_lang=None)
+    result = process_chat(user_id, transcript, forced_lang=known_lang)
     result["transcript"] = transcript
     result["sahara_file_id"] = file_id
     return result
-
+    
 
 def get_history(user_id, limit=50):
     return get_conversation(user_id)[-limit:]
