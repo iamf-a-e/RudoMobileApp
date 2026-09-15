@@ -871,7 +871,13 @@ def process_voice_chat(user_id, audio_bytes, filename="voice_note", mime_type="a
     if known_lang not in VOICE_SUPPORTED_LANGUAGES:
         return get_voice_unsupported_response(known_lang)
 
-    transcript, file_id = transcribe_audio(audio_bytes, filename, mime_type, language_hint=known_lang)
+    # Always hint Shona — handles code-switched Shona/English better,
+# and ensures Rudo responds in Shona regardless of stored language
+    transcript, file_id = transcribe_audio(audio_bytes, filename, mime_type, language_hint="shona")
+
+    # Force state language to Shona after voice transcription
+    state["language"] = "shona"
+    save_user_state(user_id, state)
 
     # FIX: `transcript` can come back as whitespace-only (e.g. "\n") on a
     # failed/garbled Sahara transcription rather than a clean empty string
