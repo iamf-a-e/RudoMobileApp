@@ -143,7 +143,7 @@ def transcribe_audio(audio_bytes, filename="voice_note", mime_type="audio/wav", 
     )
 
     try:
-        resp = requests.post(SAHARA_UPLOAD_URL, headers=headers, files=files, data=data, timeout=15)
+        resp = requests.post(SAHARA_UPLOAD_URL, headers=headers, files=files, data=data, timeout=125)
 
         if not resp.ok:
             logging.error(
