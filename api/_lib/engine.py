@@ -873,7 +873,20 @@ def process_voice_chat(user_id, audio_bytes, filename="voice_note", mime_type="a
 
     transcript, file_id = transcribe_audio(audio_bytes, filename, mime_type, language_hint=known_lang)
 
-    if not transcript:
+    # FIX: `transcript` can come back as whitespace-only (e.g. "\n") on a
+    # failed/garbled Sahara transcription rather than a clean empty string
+    # or None. `if not transcript:` doesn't catch that case — "\n" is
+    # truthy — so a whitespace-only transcript used to fall through into
+    # process_chat() as if it were a real user message. That produced two
+    # problems: (1) it skipped the clean, already-language-aware
+    # FALLBACK_MSG[known_lang] response below, and (2) ask_gemini() would
+    # get called with an effectively blank "Current question" but with
+    # prior (possibly also-garbled) conversation history still injected
+    # via build_context(), which could pull Gemini into responding to
+    # stale/garbled context in the wrong language. Checking
+    # `transcript.strip()` closes that gap so any non-substantive
+    # transcription result reliably takes the fallback path instead.
+    if not transcript or not transcript.strip():
         error_text = FALLBACK_MSG.get(known_lang, FALLBACK_MSG["english"])
         return {"reply": error_text, "user_id": user_id, "error": "transcription_failed"}
 
