@@ -33,18 +33,7 @@ def voice():
         filename = audio_file.filename or "voice_note"
         mime_type = audio_file.mimetype or "audio/wav"
 
-        # rudo-chat's callRudoVoiceBackend sends this as the full language
-        # name ("english"/"shona"/...), matching what process_voice_chat
-        # checks against VOICE_SUPPORTED_LANGUAGES — not the 2-letter
-        # "en"/"sn" code used on the Flutter/edge-function side. Falls back
-        # to None (not a hardcoded default) so process_voice_chat's own
-        # first-message/Redis-state logic still applies for any caller that
-        # doesn't send a language at all.
-        language = request.form.get("language") or request.args.get("language")
-
-        result = process_voice_chat(
-            user_id, audio_bytes, filename=filename, mime_type=mime_type, language=language
-        )
+        result = process_voice_chat(user_id, audio_bytes, filename=filename, mime_type=mime_type)
         return jsonify(result)
     except Exception as e:
         logging.error(f"/api/voice error: {e}", exc_info=True)
