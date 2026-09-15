@@ -860,6 +860,11 @@ def process_voice_chat(user_id, audio_bytes, filename="voice_note", mime_type="a
     state = load_user_state(user_id)
     known_lang = state.get("language", "english")
 
+    logging.info(
+        f"[process_voice_chat] user_id={user_id} known_lang={known_lang} "
+        f"first_message={state.get('first_message', True)}"
+    )
+
     if known_lang == "english" and state.get("first_message", True):
         known_lang = "shona"
 
