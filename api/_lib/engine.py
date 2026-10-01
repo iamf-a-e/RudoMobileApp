@@ -255,10 +255,15 @@ LANGUAGE_PHRASES = {
 def _llm_detect_language(message):
     try:
         classifier_prompt = (
-            "Identify which ONE of these languages the following message is written in: "
-            "english, shona, ndebele, chinyanja, bemba, tonga, lozi. These are languages "
-            "spoken in Zimbabwe and Zambia. Reply with ONLY the single lowercase language "
-            f"name, nothing else.\n\nMessage: \"{message}\""
+            "Identify which ONE of these languages the following WhatsApp message "
+            "is written in: english, shona, ndebele, chinyanja, bemba, tonga, lozi. "
+            "These are languages spoken in Zimbabwe and Zambia. The message may mix "
+            "in a few English loanwords (e.g. medical terms like 'cervical cancer' "
+            "or 'HPV') while still being primarily one of the other languages. In "
+            "that case, classify by the surrounding grammar/vocabulary, not the "
+            "loanwords. Reply with ONLY the single lowercase language name and "
+            "nothing else, with no punctuation and no explanation.\n\n"
+            f"Message: \"{message}\""
         )
         model = genai.GenerativeModel(
             model_name=MODEL_NAME,
@@ -296,13 +301,29 @@ def _llm_detect_language(message):
 
 def detect_language(message, current_lang="english"):
     message_lower = message.lower().strip()
+
+    # Empty / pure digits (menu choices, week numbers) are never a language signal
     if not message_lower or message_lower.isdigit():
         return current_lang
 
+    # Fast path: unambiguous single-word greetings, no LLM call needed
     for lang, words in EXACT_MATCHES.items():
         if message_lower in words:
             return lang
 
+    # Primary: Gemini classifies every real message
+    guess = _llm_detect_language(message)
+    if guess:
+        if guess != current_lang:
+            logging.info(f"[detect_language] switch {current_lang} -> {guess}")
+        return guess
+
+    logging.warning("[detect_language] Gemini failed/empty, using keyword fallback")
+    return _keyword_detect_language(message_lower, current_lang)
+
+
+def _keyword_detect_language(message_lower, current_lang):
+    """Offline fallback, only reached when the Gemini call fails."""
     scores = {lang: 0 for lang in LANGUAGE_KEYWORDS}
     for lang, phrases in LANGUAGE_PHRASES.items():
         for phrase in phrases:
@@ -313,10 +334,6 @@ def detect_language(message, current_lang="english"):
             if re.search(rf"\b{re.escape(kw)}\b", message_lower):
                 scores[lang] = scores.get(lang, 0) + 3
 
-    # Common English filler words (how/please/help/...) show up inside
-    # otherwise-local-language messages too, and used to tie with the real
-    # signal — which then defaulted to staying "english". Any clear,
-    # UNIQUE non-English top scorer should win over an English tie.
     non_english_scores = {l: s for l, s in scores.items() if l != "english" and s > 0}
     if non_english_scores:
         top_score = max(non_english_scores.values())
@@ -324,17 +341,9 @@ def detect_language(message, current_lang="english"):
         if len(candidates) == 1 and top_score >= scores.get("english", 0):
             return candidates[0]
 
-    # Weak or ambiguous local signal (including none at all) — ask the
-    # Gemini classifier rather than silently defaulting to English.
-    words_in_msg = re.findall(r"[a-z]+", message_lower)
-    if len(words_in_msg) >= 2:
-        guess = _llm_detect_language(message)
-        if guess:
-            return guess
-
     max_score = max(scores.values()) if scores else 0
     if max_score > 0:
-        top_langs = [lang for lang, s in scores.items() if s == max_score]
+        top_langs = [l for l, s in scores.items() if s == max_score]
         if current_lang in top_langs:
             return current_lang
         if len(top_langs) == 1:
@@ -343,9 +352,7 @@ def detect_language(message, current_lang="english"):
 
     if all(ord(c) < 128 for c in message_lower):
         return current_lang
-
     return "english"
-
 
 # ─────────────────────────────────────────────
 #  Per-language data lookup (falls back to English if the language
