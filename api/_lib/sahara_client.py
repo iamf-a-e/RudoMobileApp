@@ -65,18 +65,15 @@ if not SAHARA_API_KEY:
 # (Afrikaans, Amharic, English, Hausa, Igbo, Kinyarwanda, Luganda, Oromo,
 # Pidgin, Shona, Swahili, Wolof, Yoruba). Of engine.py's seven languages,
 # only english and shona are on that list.
-VOICE_SUPPORTED_LANGUAGES = {"english", "shona"}
+VOICE_SUPPORTED_LANGUAGES = {"english"}
 
 ENGINE_TO_SAHARA_LANG = {
     "english": "en",
-    "shona": "sn",
-    # ndebele, chinyanja, bemba, tonga, lozi intentionally omitted —
-    # not in Sahara's supported language list as of this writing
 }
 
 VOICE_UNSUPPORTED_MESSAGE = (
     "Sorry, voice isn't available in your language yet. Please type your message instead, "
-    "or continue by voice in English or Shona."
+    "or continue by voice in English"
 )
 
 
