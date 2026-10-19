@@ -26,6 +26,7 @@ import os
 import re
 import sys
 import json
+import base64
 import logging
 from datetime import datetime
 
@@ -41,8 +42,10 @@ from _lib.instructions import (
     company_website,
     company_phone,
 )
-from _lib.sahara_client import (
+from _lib.mansa_client import (
     transcribe_audio,
+    synthesize_speech,
+    normalize_language,
     VOICE_SUPPORTED_LANGUAGES,
     get_voice_unsupported_response,
 )
@@ -846,28 +849,46 @@ def process_chat(user_id, message, forced_lang=None):
     } 
 
 
-def process_voice_chat(user_id, audio_bytes, filename="voice_note", mime_type="audio/wav", language=None):
-    """Voice is English-only for now: transcribe as English, reply in English."""
-    requested = (language or "english").strip().lower()
-    if requested not in VOICE_SUPPORTED_LANGUAGES and requested != "en":
+def process_voice_chat(user_id, audio_bytes, filename="voice_note", mime_type="audio/wav",
+                       language=None, duration_seconds=None):
+    """
+    Voice in, voice out via Mansa. Transcribe in the user's language, run the
+    normal grounded text pipeline, then speak the reply back in the same language.
+    Languages without Mansa STT (ndebele, tonga, lozi) get the text fallback.
+    """
+    if language:
+        requested = normalize_language(language)
+    else:
+        # No language sent by the caller: use whatever this user last settled on.
+        requested = load_user_state(user_id).get("language", "english")
+
+    if requested not in VOICE_SUPPORTED_LANGUAGES:
         return get_voice_unsupported_response(requested)
 
-    transcript, file_id = transcribe_audio(
-        audio_bytes, filename, mime_type, language_hint="english"
+    transcript = transcribe_audio(
+        audio_bytes, filename, mime_type,
+        language_hint=requested, duration_seconds=duration_seconds,
     )
 
     if not transcript or not transcript.strip():
         return {
-            "reply": FALLBACK_MSG["english"],
+            "reply": FALLBACK_MSG.get(requested, FALLBACK_MSG["english"]),
             "user_id": user_id,
             "error": "transcription_failed",
         }
 
-    result = process_chat(user_id, transcript, forced_lang="english")
+    result = process_chat(user_id, transcript, forced_lang=requested)
     result["transcript"] = transcript
-    result["sahara_file_id"] = file_id
+
+    # TTS failure must never break the text reply.
+    reply_audio = None
+    audio = synthesize_speech(result.get("reply", ""), result.get("language", requested))
+    if audio:
+        reply_audio = base64.b64encode(audio).decode("ascii")
+    result["reply_audio"] = reply_audio
+    result["reply_audio_mime"] = "audio/wav" if reply_audio else None
     return result
-    
+
 
 def get_history(user_id, limit=50):
     return get_conversation(user_id)[-limit:]
@@ -887,6 +908,6 @@ def health_status():
         "redis": "connected" if redis_client else "not_configured",
         "firestore": "connected" if firestore_db else "not_configured",
         "gemini_key_present": bool(GEN_API),
-        "sahara_key_present": bool(os.environ.get("SAHARA_API_KEY")),
+        "mansa_key_present": bool(os.environ.get("MANSA_API_KEY") and os.environ.get("MANSA_API_BASE_URL")),
         "timestamp": datetime.now().isoformat(),
     }
