@@ -52,10 +52,15 @@ def voice():
         # Opt-in TTS (tts=1). Off by default, see process_voice_chat.
         synthesize_audio = (request.form.get("tts") or request.args.get("tts")) == "1"
 
+        # transcribe_only=1: return just the transcript (no reply, no chat state).
+        transcribe_only = (
+            request.form.get("transcribe_only") or request.args.get("transcribe_only")
+        ) == "1"
+
         result = process_voice_chat(
             user_id, audio_bytes, filename=filename, mime_type=mime_type,
             language=language, duration_seconds=duration_seconds,
-            synthesize_audio=synthesize_audio,
+            synthesize_audio=synthesize_audio, transcribe_only=transcribe_only,
         )
         return jsonify(result)
     except Exception as e:
