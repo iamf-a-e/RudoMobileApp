@@ -850,7 +850,8 @@ def process_chat(user_id, message, forced_lang=None):
 
 
 def process_voice_chat(user_id, audio_bytes, filename="voice_note", mime_type="audio/wav",
-                       language=None, duration_seconds=None, synthesize_audio=False):
+                       language=None, duration_seconds=None, synthesize_audio=False,
+                       transcribe_only=False):
     """
     Voice in via Mansa STT. Transcribe in the user's language and run the normal
     grounded text pipeline. Languages without Mansa STT (ndebele, tonga, lozi)
@@ -881,6 +882,17 @@ def process_voice_chat(user_id, audio_bytes, filename="voice_note", mime_type="a
             "reply": FALLBACK_MSG.get(requested, FALLBACK_MSG["english"]),
             "user_id": user_id,
             "error": "transcription_failed",
+        }
+
+    if transcribe_only:
+        # Review flow: the app shows the transcript, lets the user edit it, then
+        # sends the confirmed text as a normal text turn. Skip process_chat so no
+        # Gemini call is made and no chat state is touched for unconfirmed text.
+        return {
+            "transcript": transcript.strip(),
+            "language": requested,
+            "voice_supported": True,
+            "transcribe_only": True,
         }
 
     result = process_chat(user_id, transcript, forced_lang=requested)
