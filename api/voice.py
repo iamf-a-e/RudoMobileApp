@@ -42,8 +42,20 @@ def voice():
         # doesn't send a language at all.
         language = request.form.get("language") or request.args.get("language")
 
+        # Optional: the app can send the recording length in seconds. Mansa bills
+        # STT by duration, and it is exact for any format, not just WAV.
+        try:
+            duration_seconds = float(request.form.get("duration_seconds") or 0) or None
+        except ValueError:
+            duration_seconds = None
+
+        # Opt-in TTS (tts=1). Off by default, see process_voice_chat.
+        synthesize_audio = (request.form.get("tts") or request.args.get("tts")) == "1"
+
         result = process_voice_chat(
-            user_id, audio_bytes, filename=filename, mime_type=mime_type, language=language
+            user_id, audio_bytes, filename=filename, mime_type=mime_type,
+            language=language, duration_seconds=duration_seconds,
+            synthesize_audio=synthesize_audio,
         )
         return jsonify(result)
     except Exception as e:
