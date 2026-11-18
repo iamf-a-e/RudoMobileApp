@@ -178,7 +178,10 @@ def transcribe_audio(audio_bytes, filename="voice_note", mime_type="audio/wav",
         logging.error(f"[transcribe_audio] no Mansa STT for language_hint={language_hint}")
         return None
 
-    mime_type = (mime_type or "audio/wav").split(";")[0].strip()
+    claimed = (mime_type or "audio/wav").split(";")[0].strip() 
+    mime_type = _sniff_mime(audio_bytes, claimed) 
+    if mime_type != claimed:     
+        logging.warning(f"[transcribe_audio] mime mismatch claimed={claimed} detected={mime_type}")
     duration = _audio_duration(audio_bytes, mime_type, duration_seconds)
     payload = {
         "audioBase64": base64.b64encode(audio_bytes).decode("ascii"),
