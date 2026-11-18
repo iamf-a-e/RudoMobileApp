@@ -148,6 +148,24 @@ def _filename_for(filename, mime_type):
     return f"{base}.{ext}"
 
 
+def _sniff_mime(audio_bytes, claimed):
+    """Detect the real audio format from the file header, ignoring the claimed type."""
+    head = audio_bytes[:16]
+    if head[:4] == b"RIFF" and head[8:12] == b"WAVE":
+        return "audio/wav"
+    if head[:4] == b"OggS":
+        return "audio/ogg"
+    if head[:4] == b"\x1aE\xdf\xa3":
+        return "audio/webm"
+    if head[:4] == b"fLaC":
+        return "audio/flac"
+    if head[4:8] == b"ftyp":
+        return "audio/mp4"
+    if head[:3] == b"ID3" or head[:2] in (b"\xff\xfb", b"\xff\xf3", b"\xff\xf2"):
+        return "audio/mpeg"
+    return claimed
+
+
 def _clean_for_tts(text):
     """Strip markdown noise, collapse whitespace, cap length at a sentence boundary."""
     text = re.sub(r"[*_`#>]+", "", text or "")
