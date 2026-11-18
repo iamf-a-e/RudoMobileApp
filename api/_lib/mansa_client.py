@@ -26,7 +26,9 @@ Audio handling (browser recordings):
      the real format from the file header and ignores a wrong label.
   2. Empty recordings (header only, about 44 bytes) are rejected before calling
      Mansa, which would otherwise fail with "Could not determine audio duration".
-  3. Browser WAV headers can carry bad chunk sizes (0 or 0xFFFFFFFF) or
+  3. prepare_audio() is public so engine.py can run language identification on
+     the same cleaned audio before transcribing.
+  4. Browser WAV headers can carry bad chunk sizes (0 or 0xFFFFFFFF) or
      32-bit float samples. Mansa then fails with "Could not determine audio
      duration". _normalize_wav rebuilds a clean 16-bit PCM WAV and measures the
      real duration.
@@ -257,6 +259,34 @@ def _clean_for_tts(text):
     return cut[: end + 1] if end > TTS_MAX_CHARS // 2 else cut
 
 
+def prepare_audio(audio_bytes, claimed_mime, duration_seconds=None):
+    """
+    Make browser or phone audio safe to hand to any speech model.
+    Detects the real format (ignoring a wrong label) and, for WAV, rebuilds a
+    clean 16-bit PCM file with the measured duration.
+    Returns (audio_bytes, mime_type, duration_seconds). Safe to call twice.
+    """
+    claimed = (claimed_mime or "audio/wav").split(";")[0].strip()
+    mime_type = _sniff_mime(audio_bytes, claimed)
+    if mime_type != claimed:
+        logging.warning(
+            f"[prepare_audio] mime mismatch claimed={claimed} detected={mime_type}"
+        )
+
+    if mime_type == "audio/wav":
+        normalized = _normalize_wav(audio_bytes)
+        if normalized:
+            audio_bytes, duration_seconds = normalized
+            logging.info(
+                f"[prepare_audio] normalized wav: {len(audio_bytes)} bytes, "
+                f"{duration_seconds:.1f}s"
+            )
+        else:
+            logging.warning("[prepare_audio] could not normalize wav, sending as is")
+
+    return audio_bytes, mime_type, duration_seconds
+
+
 # ─────────────────────────────────────────────
 #  Transcription
 # ─────────────────────────────────────────────
@@ -283,26 +313,10 @@ def transcribe_audio(audio_bytes, filename="voice_note", mime_type="audio/wav",
         )
         return None
 
-    # Trust the bytes over the label the app sent.
-    claimed = (mime_type or "audio/wav").split(";")[0].strip()
-    mime_type = _sniff_mime(audio_bytes, claimed)
-    if mime_type != claimed:
-        logging.warning(
-            f"[transcribe_audio] mime mismatch claimed={claimed} detected={mime_type}"
-        )
-
-    # Rebuild a clean PCM WAV so Mansa can read the duration. The measured
-    # duration replaces whatever the app sent.
-    if mime_type == "audio/wav":
-        normalized = _normalize_wav(audio_bytes)
-        if normalized:
-            audio_bytes, duration_seconds = normalized
-            logging.info(
-                f"[transcribe_audio] normalized wav: {len(audio_bytes)} bytes, "
-                f"{duration_seconds:.1f}s"
-            )
-        else:
-            logging.warning("[transcribe_audio] could not normalize wav, sending as is")
+    # Trust the bytes over the label the app sent, and rebuild a clean WAV.
+    audio_bytes, mime_type, duration_seconds = prepare_audio(
+        audio_bytes, mime_type, duration_seconds
+    )
 
     duration = _audio_duration(audio_bytes, mime_type, duration_seconds)
     payload = {
