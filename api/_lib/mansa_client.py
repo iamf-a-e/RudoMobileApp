@@ -31,7 +31,9 @@ Audio handling (browser recordings):
   4. WAV audio is converted to 16 kHz mono 16-bit PCM, the format speech models
      are trained on. Browser recordings arrive as 44.1 kHz stereo, which gave
      clearly worse transcripts.
-  5. Browser WAV headers can carry bad chunk sizes (0 or 0xFFFFFFFF) or
+  5. Near-silent clips are rejected (see SILENCE_PEAK) because speech models
+     hallucinate text for them. Loudness is logged on every request.
+  6. Browser WAV headers can carry bad chunk sizes (0 or 0xFFFFFFFF) or
      32-bit float samples. Mansa then fails with "Could not determine audio
      duration". _normalize_wav rebuilds a clean 16-bit PCM WAV and measures the
      real duration.
@@ -117,6 +119,11 @@ _MIME_EXT = {
 # stereo, which Mansa transcribes noticeably worse. prepare_audio converts WAV
 # input to this rate. Set MANSA_TARGET_SAMPLE_RATE=0 to send audio unchanged.
 TARGET_SAMPLE_RATE = int(os.environ.get("MANSA_TARGET_SAMPLE_RATE", "16000"))
+
+# A clip whose loudest sample is below this fraction of full scale is silence or
+# mic noise. Speech models invent text for such clips (a real example was a
+# Welsh sentence about Bhutan), so they are rejected instead of transcribed.
+SILENCE_PEAK = float(os.environ.get("MANSA_SILENCE_PEAK", "0.01"))
 
 # Anything smaller than this is a header with no speech (a bare WAV header is 44
 # bytes). Mansa answers those with "Could not determine audio duration".
@@ -347,6 +354,34 @@ def prepare_audio(audio_bytes, claimed_mime, duration_seconds=None):
     return audio_bytes, mime_type, duration_seconds
 
 
+def measure_levels(audio_bytes, mime_type="audio/wav"):
+    """
+    Loudness of a 16-bit PCM WAV: {"peak", "rms", "seconds"} as fractions of
+    full scale (peak and rms) and seconds of audio. Returns None for other
+    formats or if it can't be read. Speech normally peaks above 0.05.
+    """
+    if mime_type != "audio/wav":
+        return None
+    try:
+        with wave.open(io.BytesIO(audio_bytes)) as w:
+            if w.getsampwidth() != 2:
+                return None
+            frames = w.readframes(w.getnframes())
+            rate = w.getframerate() * w.getnchannels()
+        samples = array("h")
+        samples.frombytes(frames[: len(frames) // 2 * 2])
+        if sys.byteorder == "big":
+            samples.byteswap()
+        if not samples:
+            return None
+        peak = max(max(samples), -min(samples)) / 32768.0
+        rms = (sum(x * x for x in samples) / len(samples)) ** 0.5 / 32768.0
+        return {"peak": peak, "rms": rms, "seconds": len(samples) / float(rate)}
+    except Exception as e:
+        logging.warning(f"[measure_levels] {type(e).__name__}: {e}")
+        return None
+
+
 # ─────────────────────────────────────────────
 #  Transcription
 # ─────────────────────────────────────────────
@@ -377,6 +412,19 @@ def transcribe_audio(audio_bytes, filename="voice_note", mime_type="audio/wav",
     audio_bytes, mime_type, duration_seconds = prepare_audio(
         audio_bytes, mime_type, duration_seconds
     )
+
+    levels = measure_levels(audio_bytes, mime_type)
+    if levels:
+        logging.info(
+            f"[transcribe_audio] levels peak={levels['peak']:.3f} rms={levels['rms']:.4f} "
+            f"seconds={levels['seconds']:.1f}"
+        )
+        if levels["peak"] < SILENCE_PEAK:
+            logging.warning(
+                f"[transcribe_audio] clip is near silent (peak={levels['peak']:.4f}), "
+                "not calling Mansa"
+            )
+            return None
 
     duration = _audio_duration(audio_bytes, mime_type, duration_seconds)
     payload = {
