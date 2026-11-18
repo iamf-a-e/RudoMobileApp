@@ -24,7 +24,9 @@ Audio handling (browser recordings):
      audio/mp4). Mansa trusts the label, decodes the wrong codec and returns
      garbage such as Arabic script for Shona speech. transcribe_audio detects
      the real format from the file header and ignores a wrong label.
-  2. Browser WAV headers can carry bad chunk sizes (0 or 0xFFFFFFFF) or
+  2. Empty recordings (header only, about 44 bytes) are rejected before calling
+     Mansa, which would otherwise fail with "Could not determine audio duration".
+  3. Browser WAV headers can carry bad chunk sizes (0 or 0xFFFFFFFF) or
      32-bit float samples. Mansa then fails with "Could not determine audio
      duration". _normalize_wav rebuilds a clean 16-bit PCM WAV and measures the
      real duration.
@@ -103,6 +105,10 @@ _MIME_EXT = {
     "audio/mp4": "m4a", "audio/x-m4a": "m4a", "audio/aac": "aac",
     "audio/ogg": "ogg", "audio/webm": "webm", "audio/flac": "flac",
 }
+
+# Anything smaller than this is a header with no speech (a bare WAV header is 44
+# bytes). Mansa answers those with "Could not determine audio duration".
+MIN_AUDIO_BYTES = 2000
 
 # All four STT languages are written in Latin script. A transcript in Arabic
 # script for one of them means the audio was decoded wrongly, not that the
@@ -268,6 +274,13 @@ def transcribe_audio(audio_bytes, filename="voice_note", mime_type="audio/wav",
     mansa_lang = STT_LANGUAGES.get(language_hint)
     if not mansa_lang:
         logging.error(f"[transcribe_audio] no Mansa STT for language_hint={language_hint}")
+        return None
+
+    if not audio_bytes or len(audio_bytes) < MIN_AUDIO_BYTES:
+        logging.warning(
+            f"[transcribe_audio] audio too short to contain speech "
+            f"(audio_bytes={len(audio_bytes or b'')}), not calling Mansa"
+        )
         return None
 
     # Trust the bytes over the label the app sent.
