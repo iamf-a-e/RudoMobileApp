@@ -47,7 +47,9 @@ from _lib.mansa_client import (
     synthesize_speech,
     normalize_language,
     prepare_audio,
+    measure_levels,
     MIN_AUDIO_BYTES,
+    SILENCE_PEAK,
     VOICE_SUPPORTED_LANGUAGES,
     get_voice_unsupported_response,
 )
@@ -974,6 +976,22 @@ def process_voice_chat(user_id, audio_bytes, filename="voice_note", mime_type="a
     prepared_bytes, prepared_mime, prepared_duration = prepare_audio(
         audio_bytes, mime_type, duration_seconds
     )
+
+    # Log loudness and stop here for silent clips: language ID and STT both
+    # make things up when given silence, which then reaches the medical model.
+    levels = measure_levels(prepared_bytes, prepared_mime)
+    if levels:
+        logging.info(
+            f"[process_voice_chat] levels peak={levels['peak']:.3f} "
+            f"rms={levels['rms']:.4f} seconds={levels['seconds']:.1f}"
+        )
+        if levels["peak"] < SILENCE_PEAK:
+            logging.warning("[process_voice_chat] near-silent clip, skipping")
+            return {
+                "reply": FALLBACK_MSG.get(prior, FALLBACK_MSG["english"]),
+                "user_id": user_id,
+                "error": "audio_silent",
+            }
 
     detected = None
     if VOICE_AUTO_DETECT_LANGUAGE:
