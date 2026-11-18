@@ -46,6 +46,8 @@ from _lib.mansa_client import (
     transcribe_audio,
     synthesize_speech,
     normalize_language,
+    prepare_audio,
+    MIN_AUDIO_BYTES,
     VOICE_SUPPORTED_LANGUAGES,
     get_voice_unsupported_response,
 )
@@ -82,6 +84,26 @@ safety_settings = [
 ]
 
 SUPPORTED_LANGUAGES = ["english", "shona", "ndebele", "chinyanja", "bemba", "tonga", "lozi"]
+
+# Voice notes: identify the language actually spoken in the clip before
+# transcribing, because Mansa has no auto-detect and the app's language setting
+# is often not the language the patient speaks. Set VOICE_AUTO_DETECT_LANGUAGE=0
+# in the Vercel env to switch this off and trust the app's setting again.
+VOICE_AUTO_DETECT_LANGUAGE = os.environ.get("VOICE_AUTO_DETECT_LANGUAGE", "1") != "0"
+
+# Names Gemini may use for a language, mapped to engine.py keys.
+_SPOKEN_LANGUAGE_ALIASES = {
+    "nyanja": "chinyanja",
+    "chichewa": "chinyanja",
+    "cinyanja": "chinyanja",
+    "chibemba": "bemba",
+    "cibemba": "bemba",
+    "chishona": "shona",
+    "isindebele": "ndebele",
+    "sindebele": "ndebele",
+    "chitonga": "tonga",
+    "silozi": "lozi",
+}
 
 # ─────────────────────────────────────────────
 #  Redis (Upstash) — per-user state + optional Firestore chat log
@@ -300,7 +322,7 @@ def _llm_detect_language(message):
     except Exception as e:
         logging.error(f"[_llm_detect_language] {e}")
         return None
-        
+
 
 def detect_language(message, current_lang="english"):
     message_lower = message.lower().strip()
@@ -356,6 +378,71 @@ def _keyword_detect_language(message_lower, current_lang):
     if all(ord(c) < 128 for c in message_lower):
         return current_lang
     return "english"
+
+
+def _parse_spoken_language(raw_text):
+    """
+    Turn Gemini's reply into an engine.py language key. Returns None when the
+    reply is "other", empty, or names something we don't support.
+    """
+    for word in re.findall(r"[a-z]+", (raw_text or "").lower()):
+        word = _SPOKEN_LANGUAGE_ALIASES.get(word, word)
+        if word in SUPPORTED_LANGUAGES:
+            return word
+        if word == "other":
+            return None
+    return None
+
+
+def detect_spoken_language(audio_bytes, mime_type, prior=None):
+    """
+    Identify which of Rudo's seven languages is spoken in an audio clip, so
+    Mansa STT is told the right language. Returns a language key, or None when
+    Gemini is unsure, says "other", or fails (the caller then keeps `prior`).
+    """
+    if not GEN_API or not audio_bytes:
+        return None
+
+    prompt = (
+        "Listen to this voice note and identify the main language the speaker "
+        "is using. Choose exactly ONE of: english, shona, ndebele, chinyanja, "
+        "bemba, tonga, lozi, other. The speaker is a patient in Zimbabwe or "
+        "Zambia. They often mix in English medical words (for example "
+        "'pregnant', 'clinic', 'cervical cancer') while speaking mainly in "
+        "another language. In that case choose the language of the surrounding "
+        "grammar and vocabulary, not the English loanwords. "
+        + (
+            f"The app's language setting is {prior}, but patients often speak a "
+            "different language from their setting, so decide from the audio. "
+            if prior else ""
+        )
+        + "Reply with ONLY the single lowercase word and nothing else."
+    )
+
+    try:
+        model = genai.GenerativeModel(
+            model_name=MODEL_NAME,
+            # Generous budget: gemini-2.5-flash can spend output tokens on
+            # reasoning before the visible answer (see _llm_detect_language).
+            generation_config={"temperature": 0, "max_output_tokens": 256},
+            safety_settings=safety_settings,
+        )
+        response = model.generate_content(
+            [prompt, {"mime_type": mime_type, "data": audio_bytes}]
+        )
+        candidates = getattr(response, "candidates", None) or []
+        parts = getattr(getattr(candidates[0], "content", None), "parts", None) if candidates else None
+        if not parts:
+            logging.info("[detect_spoken_language] empty response from Gemini")
+            return None
+        raw_text = "".join(getattr(p, "text", "") for p in parts)
+        guess = _parse_spoken_language(raw_text)
+        logging.info(f"[detect_spoken_language] raw={raw_text.strip()[:40]!r} guess={guess}")
+        return guess
+    except Exception as e:
+        logging.error(f"[detect_spoken_language] {type(e).__name__}: {e}")
+        return None
+
 
 # ─────────────────────────────────────────────
 #  Per-language data lookup (falls back to English if the language
@@ -649,16 +736,15 @@ def handle_turn(user_id, message, state, out):
         out.append(greet_text(lang))
         return
 
-   
-        # ---- appointment booking / rescheduling ----
+    # ---- appointment booking / rescheduling ----
     if (
         _contains_signal(prompt_lower, APPOINTMENT_KEYWORDS)
         or step.startswith("appt_")
     ):
         handle_appointment_turn(user_id, message, state, out, redis_client=redis_client)
         return
-        
-         # ---- shop flow (scripted — exact prices/cart, no Gemini) ----
+
+    # ---- shop flow (scripted — exact prices/cart, no Gemini) ----
     if step == "shop_browse":
         if prompt_lower.isdigit():
             categories = list(products_by_category.keys())
@@ -846,16 +932,21 @@ def process_chat(user_id, message, forced_lang=None):
         "language": state["language"],
         "step": state["step"],
         "timestamp": datetime.now().isoformat(),
-    } 
+    }
 
 
 def process_voice_chat(user_id, audio_bytes, filename="voice_note", mime_type="audio/wav",
                        language=None, duration_seconds=None, synthesize_audio=False,
                        transcribe_only=False):
     """
-    Voice in via Mansa STT. Transcribe in the user's language and run the normal
-    grounded text pipeline. Languages without Mansa STT (ndebele, tonga, lozi)
-    get the text fallback.
+    Voice in via Mansa STT. Identify the language actually spoken in the clip
+    (Gemini listens to the audio), transcribe in that language, and run the
+    normal grounded text pipeline. Languages without Mansa STT (ndebele, tonga,
+    lozi) get the text fallback.
+
+    `language` is only a prior: it is the app's language setting, which often
+    differs from what the patient speaks. Mansa has no auto-detect, so telling
+    it the wrong language produces a wrong or garbled transcript.
 
     TTS is OFF by default: the rudo-chat edge function rewrites the reply
     (appointment agent) and the app calls the tts edge function itself, so
@@ -864,22 +955,45 @@ def process_voice_chat(user_id, audio_bytes, filename="voice_note", mime_type="a
     want audio straight from this endpoint.
     """
     if language:
-        requested = normalize_language(language)
+        prior = normalize_language(language)
     else:
         # No language sent by the caller: use whatever this user last settled on.
-        requested = load_user_state(user_id).get("language", "english")
+        prior = load_user_state(user_id).get("language", "english")
 
-    if requested not in VOICE_SUPPORTED_LANGUAGES:
-        return get_voice_unsupported_response(requested)
+    if not audio_bytes or len(audio_bytes) < MIN_AUDIO_BYTES:
+        logging.warning(
+            f"[process_voice_chat] audio too short (bytes={len(audio_bytes or b'')}), skipping"
+        )
+        return {
+            "reply": FALLBACK_MSG.get(prior, FALLBACK_MSG["english"]),
+            "user_id": user_id,
+            "error": "transcription_failed",
+        }
+
+    # Clean the audio once so language identification and STT see the same bytes.
+    prepared_bytes, prepared_mime, prepared_duration = prepare_audio(
+        audio_bytes, mime_type, duration_seconds
+    )
+
+    detected = None
+    if VOICE_AUTO_DETECT_LANGUAGE:
+        detected = detect_spoken_language(prepared_bytes, prepared_mime, prior)
+    spoken = detected or prior
+    logging.info(
+        f"[process_voice_chat] prior={prior} detected={detected} using={spoken}"
+    )
+
+    if spoken not in VOICE_SUPPORTED_LANGUAGES:
+        return get_voice_unsupported_response(spoken)
 
     transcript = transcribe_audio(
-        audio_bytes, filename, mime_type,
-        language_hint=requested, duration_seconds=duration_seconds,
+        prepared_bytes, filename, prepared_mime,
+        language_hint=spoken, duration_seconds=prepared_duration,
     )
 
     if not transcript or not transcript.strip():
         return {
-            "reply": FALLBACK_MSG.get(requested, FALLBACK_MSG["english"]),
+            "reply": FALLBACK_MSG.get(spoken, FALLBACK_MSG["english"]),
             "user_id": user_id,
             "error": "transcription_failed",
         }
@@ -890,18 +1004,20 @@ def process_voice_chat(user_id, audio_bytes, filename="voice_note", mime_type="a
         # Gemini call is made and no chat state is touched for unconfirmed text.
         return {
             "transcript": transcript.strip(),
-            "language": requested,
+            "language": spoken,
+            "detected_language": detected,
             "voice_supported": True,
             "transcribe_only": True,
         }
 
-    result = process_chat(user_id, transcript, forced_lang=requested)
+    result = process_chat(user_id, transcript, forced_lang=spoken)
     result["transcript"] = transcript
+    result["detected_language"] = detected
 
     # TTS failure must never break the text reply.
     reply_audio = None
     if synthesize_audio:
-        audio = synthesize_speech(result.get("reply", ""), result.get("language", requested))
+        audio = synthesize_speech(result.get("reply", ""), result.get("language", spoken))
         if audio:
             reply_audio = base64.b64encode(audio).decode("ascii")
     result["reply_audio"] = reply_audio
