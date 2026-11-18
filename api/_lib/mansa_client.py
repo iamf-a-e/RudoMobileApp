@@ -19,10 +19,15 @@ Mansa requires an explicit language for every transcription. There is no
 documented auto-detect or code-switching mode, so a clip is decoded as ONE
 language (the same single-language limitation the Sahara client had).
 
-Audio format: the app can mislabel what it recorded (for example WAV bytes sent
-as audio/mp4). Mansa trusts the label, decodes the wrong codec and returns
-garbage such as Arabic script for Shona speech. transcribe_audio therefore
-detects the real format from the file header and ignores a wrong label.
+Audio handling (browser recordings):
+  1. The app can mislabel what it recorded (for example WAV bytes sent as
+     audio/mp4). Mansa trusts the label, decodes the wrong codec and returns
+     garbage such as Arabic script for Shona speech. transcribe_audio detects
+     the real format from the file header and ignores a wrong label.
+  2. Browser WAV headers can carry bad chunk sizes (0 or 0xFFFFFFFF) or
+     32-bit float samples. Mansa then fails with "Could not determine audio
+     duration". _normalize_wav rebuilds a clean 16-bit PCM WAV and measures the
+     real duration.
 """
 
 import io
@@ -30,7 +35,9 @@ import os
 import re
 import base64
 import logging
+import struct
 import wave
+from array import array
 
 import requests
 
@@ -176,6 +183,63 @@ def _sniff_mime(audio_bytes, claimed):
     return claimed
 
 
+def _normalize_wav(audio_bytes):
+    """
+    Rebuild a clean 16-bit PCM WAV from browser-recorded audio. Fixes bad chunk
+    sizes (0 or 0xFFFFFFFF) and converts 32-bit float samples to 16-bit.
+    Returns (wav_bytes, duration_seconds), or None if it can't be parsed.
+    """
+    b = audio_bytes
+    if len(b) < 12 or b[:4] != b"RIFF" or b[8:12] != b"WAVE":
+        return None
+
+    fmt = None
+    data = None
+    off = 12
+    while off + 8 <= len(b):
+        cid = b[off:off + 4]
+        size = struct.unpack_from("<I", b, off + 4)[0]
+        body = off + 8
+        if cid == b"fmt " and body + 16 <= len(b):
+            code, ch, rate, _, _, bits = struct.unpack_from("<HHIIHH", b, body)
+            if code == 0xFFFE and body + 26 <= len(b):  # WAVE_FORMAT_EXTENSIBLE
+                code = struct.unpack_from("<H", b, body + 24)[0]
+            fmt = (code, ch, rate, bits)
+        elif cid == b"data":
+            remaining = len(b) - body
+            if size == 0 or size > remaining:
+                size = remaining
+            data = b[body:body + size]
+            break
+        off = body + size + (size % 2)
+
+    if not fmt or data is None:
+        return None
+    code, ch, rate, bits = fmt
+
+    if code == 3 and bits == 32:  # float32 -> int16
+        samples = array("f")
+        samples.frombytes(data[: len(data) // 4 * 4])
+        data = array(
+            "h", (max(-32768, min(32767, int(s * 32767))) for s in samples)
+        ).tobytes()
+        code, bits = 1, 16
+    if code != 1 or ch < 1 or rate < 1 or bits % 8:
+        return None
+
+    block = ch * bits // 8
+    data = data[: len(data) // block * block]
+    if not data:
+        return None
+
+    header = (
+        b"RIFF" + struct.pack("<I", 36 + len(data)) + b"WAVE"
+        + b"fmt " + struct.pack("<IHHIIHH", 16, 1, ch, rate, rate * block, block, bits)
+        + b"data" + struct.pack("<I", len(data))
+    )
+    return header + data, len(data) / float(rate * block)
+
+
 def _clean_for_tts(text):
     """Strip markdown noise, collapse whitespace, cap length at a sentence boundary."""
     text = re.sub(r"[*_`#>]+", "", text or "")
@@ -213,6 +277,19 @@ def transcribe_audio(audio_bytes, filename="voice_note", mime_type="audio/wav",
         logging.warning(
             f"[transcribe_audio] mime mismatch claimed={claimed} detected={mime_type}"
         )
+
+    # Rebuild a clean PCM WAV so Mansa can read the duration. The measured
+    # duration replaces whatever the app sent.
+    if mime_type == "audio/wav":
+        normalized = _normalize_wav(audio_bytes)
+        if normalized:
+            audio_bytes, duration_seconds = normalized
+            logging.info(
+                f"[transcribe_audio] normalized wav: {len(audio_bytes)} bytes, "
+                f"{duration_seconds:.1f}s"
+            )
+        else:
+            logging.warning("[transcribe_audio] could not normalize wav, sending as is")
 
     duration = _audio_duration(audio_bytes, mime_type, duration_seconds)
     payload = {
