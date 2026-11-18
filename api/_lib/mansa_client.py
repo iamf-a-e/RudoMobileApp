@@ -28,7 +28,10 @@ Audio handling (browser recordings):
      Mansa, which would otherwise fail with "Could not determine audio duration".
   3. prepare_audio() is public so engine.py can run language identification on
      the same cleaned audio before transcribing.
-  4. Browser WAV headers can carry bad chunk sizes (0 or 0xFFFFFFFF) or
+  4. WAV audio is converted to 16 kHz mono 16-bit PCM, the format speech models
+     are trained on. Browser recordings arrive as 44.1 kHz stereo, which gave
+     clearly worse transcripts.
+  5. Browser WAV headers can carry bad chunk sizes (0 or 0xFFFFFFFF) or
      32-bit float samples. Mansa then fails with "Could not determine audio
      duration". _normalize_wav rebuilds a clean 16-bit PCM WAV and measures the
      real duration.
@@ -40,8 +43,10 @@ import re
 import base64
 import logging
 import struct
+import sys
 import wave
 from array import array
+from itertools import accumulate
 
 import requests
 
@@ -107,6 +112,11 @@ _MIME_EXT = {
     "audio/mp4": "m4a", "audio/x-m4a": "m4a", "audio/aac": "aac",
     "audio/ogg": "ogg", "audio/webm": "webm", "audio/flac": "flac",
 }
+
+# Speech models are trained on 16 kHz mono audio. Browsers record 44.1 or 48 kHz
+# stereo, which Mansa transcribes noticeably worse. prepare_audio converts WAV
+# input to this rate. Set MANSA_TARGET_SAMPLE_RATE=0 to send audio unchanged.
+TARGET_SAMPLE_RATE = int(os.environ.get("MANSA_TARGET_SAMPLE_RATE", "16000"))
 
 # Anything smaller than this is a header with no speech (a bare WAV header is 44
 # bytes). Mansa answers those with "Could not determine audio duration".
@@ -191,6 +201,48 @@ def _sniff_mime(audio_bytes, claimed):
     return claimed
 
 
+def _to_mono_resampled(data, ch, rate, target_rate):
+    """
+    Mix 16-bit PCM down to mono and, if the rate is above target_rate, lower it
+    with a box filter (an average over each output sample's window, which acts
+    as a crude anti-alias filter). Pure Python so it runs on Vercel without
+    numpy or audioop. Returns (pcm_bytes, 1, new_rate), or None on bad input.
+    """
+    samples = array("h")
+    samples.frombytes(data[: len(data) // 2 * 2])
+    if sys.byteorder == "big":
+        samples.byteswap()
+
+    if ch > 1:
+        usable = len(samples) // ch * ch
+        channels = [samples[c:usable:ch] for c in range(ch)]
+        mono = array("h", (sum(frame) // ch for frame in zip(*channels)))
+    else:
+        mono = samples
+
+    new_rate = rate
+    if target_rate and rate > target_rate and len(mono) > 1:
+        ratio = rate / float(target_rate)
+        half = ratio / 2.0
+        total = len(mono)
+        cs = [0]
+        cs.extend(accumulate(mono))
+        out = array("h")
+        for j in range(int(total / ratio)):
+            centre = (j + 0.5) * ratio
+            a = max(0, int(centre - half))
+            b = min(total, max(a + 1, int(centre + half)))
+            out.append(int((cs[b] - cs[a]) / (b - a)))
+        mono = out
+        new_rate = target_rate
+
+    if not mono:
+        return None
+    if sys.byteorder == "big":
+        mono.byteswap()
+    return mono.tobytes(), 1, new_rate
+
+
 def _normalize_wav(audio_bytes):
     """
     Rebuild a clean 16-bit PCM WAV from browser-recorded audio. Fixes bad chunk
@@ -239,6 +291,14 @@ def _normalize_wav(audio_bytes):
     data = data[: len(data) // block * block]
     if not data:
         return None
+
+    # Speech format: 16 kHz mono. Only for 16-bit PCM, which is what browsers
+    # produce and what float32 input was converted to above.
+    if bits == 16 and TARGET_SAMPLE_RATE and (ch > 1 or rate > TARGET_SAMPLE_RATE):
+        converted = _to_mono_resampled(data, ch, rate, TARGET_SAMPLE_RATE)
+        if converted:
+            data, ch, rate = converted
+            block = ch * bits // 8
 
     header = (
         b"RIFF" + struct.pack("<I", 36 + len(data)) + b"WAVE"
