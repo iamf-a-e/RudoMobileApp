@@ -18,6 +18,11 @@ TTS only, so it is kept in TTS_LANGUAGES for later but gets the text fallback to
 Mansa requires an explicit language for every transcription. There is no
 documented auto-detect or code-switching mode, so a clip is decoded as ONE
 language (the same single-language limitation the Sahara client had).
+
+Audio format: the app can mislabel what it recorded (for example WAV bytes sent
+as audio/mp4). Mansa trusts the label, decodes the wrong codec and returns
+garbage such as Arabic script for Shona speech. transcribe_audio therefore
+detects the real format from the file header and ignores a wrong label.
 """
 
 import io
@@ -91,6 +96,11 @@ _MIME_EXT = {
     "audio/mp4": "m4a", "audio/x-m4a": "m4a", "audio/aac": "aac",
     "audio/ogg": "ogg", "audio/webm": "webm", "audio/flac": "flac",
 }
+
+# All four STT languages are written in Latin script. A transcript in Arabic
+# script for one of them means the audio was decoded wrongly, not that the
+# patient spoke Arabic.
+_ARABIC_SCRIPT = re.compile(r"[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF]")
 
 
 def normalize_language(language):
@@ -196,10 +206,14 @@ def transcribe_audio(audio_bytes, filename="voice_note", mime_type="audio/wav",
         logging.error(f"[transcribe_audio] no Mansa STT for language_hint={language_hint}")
         return None
 
-    claimed = (mime_type or "audio/wav").split(";")[0].strip() 
-    mime_type = _sniff_mime(audio_bytes, claimed) 
-    if mime_type != claimed:     
-        logging.warning(f"[transcribe_audio] mime mismatch claimed={claimed} detected={mime_type}")
+    # Trust the bytes over the label the app sent.
+    claimed = (mime_type or "audio/wav").split(";")[0].strip()
+    mime_type = _sniff_mime(audio_bytes, claimed)
+    if mime_type != claimed:
+        logging.warning(
+            f"[transcribe_audio] mime mismatch claimed={claimed} detected={mime_type}"
+        )
+
     duration = _audio_duration(audio_bytes, mime_type, duration_seconds)
     payload = {
         "audioBase64": base64.b64encode(audio_bytes).decode("ascii"),
@@ -219,10 +233,22 @@ def transcribe_audio(audio_bytes, filename="voice_note", mime_type="audio/wav",
         if not resp.ok:
             logging.error(f"[transcribe_audio] HTTP {resp.status_code} body={resp.text[:2000]}")
         resp.raise_for_status()
-        return ((resp.json().get("data") or {}).get("transcript") or "").strip()
+        text = ((resp.json().get("data") or {}).get("transcript") or "").strip()
     except Exception as e:
         logging.error(f"[transcribe_audio] {type(e).__name__}: {e}")
         return None
+
+    # Arabic script for a Latin-script language means a bad decode. Return None
+    # so the caller can ask the patient to try again instead of sending garbage
+    # to the medical model.
+    if text and _ARABIC_SCRIPT.search(text):
+        logging.warning(
+            f"[transcribe_audio] Arabic-script transcript for language_hint={language_hint}, "
+            f"rejecting (mime_type={mime_type}, audio_bytes={len(audio_bytes)})"
+        )
+        return None
+
+    return text
 
 
 # ─────────────────────────────────────────────
