@@ -28,9 +28,9 @@ Audio handling (browser recordings):
      Mansa, which would otherwise fail with "Could not determine audio duration".
   3. prepare_audio() is public so engine.py can run language identification on
      the same cleaned audio before transcribing.
-  4. WAV audio is converted to 16 kHz mono 16-bit PCM, the format speech models
-     are trained on. Browser recordings arrive as 44.1 kHz stereo, which gave
-     clearly worse transcripts.
+  4. WAV audio keeps its original sample rate and channels by default. An
+     optional 16 kHz mono conversion exists (MANSA_TARGET_SAMPLE_RATE) but made
+     transcripts worse in testing.
   5. Near-silent clips are rejected (see SILENCE_PEAK) because speech models
      hallucinate text for them. Loudness is logged on every request.
   6. Quiet recordings are amplified toward a healthy level (see NORMALIZE_PEAK).
@@ -116,10 +116,11 @@ _MIME_EXT = {
     "audio/ogg": "ogg", "audio/webm": "webm", "audio/flac": "flac",
 }
 
-# Speech models are trained on 16 kHz mono audio. Browsers record 44.1 or 48 kHz
-# stereo, which Mansa transcribes noticeably worse. prepare_audio converts WAV
-# input to this rate. Set MANSA_TARGET_SAMPLE_RATE=0 to send audio unchanged.
-TARGET_SAMPLE_RATE = int(os.environ.get("MANSA_TARGET_SAMPLE_RATE", "16000"))
+# Optional conversion of WAV input to 16 kHz mono (set MANSA_TARGET_SAMPLE_RATE=16000
+# to turn it on). It is OFF by default: in a side by side test on the same
+# recording, Mansa transcribed the original 44.1 kHz stereo audio better than a
+# 16 kHz mono conversion. 0 means send the original sample rate and channels.
+TARGET_SAMPLE_RATE = int(os.environ.get("MANSA_TARGET_SAMPLE_RATE", "0"))
 
 # A clip whose loudest sample is below this fraction of full scale is silence or
 # mic noise. Speech models invent text for such clips (a real example was a
