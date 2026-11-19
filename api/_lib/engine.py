@@ -93,6 +93,13 @@ SUPPORTED_LANGUAGES = ["english", "shona", "ndebele", "chinyanja", "bemba", "ton
 # in the Vercel env to switch this off and trust the app's setting again.
 VOICE_AUTO_DETECT_LANGUAGE = os.environ.get("VOICE_AUTO_DETECT_LANGUAGE", "1") != "0"
 
+# When Gemini says a clip is "other" (unintelligible or not one of our
+# languages), a clip shorter than this is treated as unclear and the patient is
+# asked to try again. Mansa invents text for such clips (a real example was a
+# Welsh sentence). Longer clips keep the app's language setting, because
+# Gemini is less reliable on Bemba and Chichewa.
+VOICE_UNCLEAR_MAX_SECONDS = float(os.environ.get("VOICE_UNCLEAR_MAX_SECONDS", "2.0"))
+
 # Names Gemini may use for a language, mapped to engine.py keys.
 _SPOKEN_LANGUAGE_ALIASES = {
     "nyanja": "chinyanja",
@@ -384,23 +391,25 @@ def _keyword_detect_language(message_lower, current_lang):
 
 def _parse_spoken_language(raw_text):
     """
-    Turn Gemini's reply into an engine.py language key. Returns None when the
-    reply is "other", empty, or names something we don't support.
+    Turn Gemini's reply into an engine.py language key, or "other" when Gemini
+    says the clip is not one of our languages (or is unintelligible). Returns
+    None when the reply is empty or unusable.
     """
     for word in re.findall(r"[a-z]+", (raw_text or "").lower()):
         word = _SPOKEN_LANGUAGE_ALIASES.get(word, word)
         if word in SUPPORTED_LANGUAGES:
             return word
         if word == "other":
-            return None
+            return "other"
     return None
 
 
 def detect_spoken_language(audio_bytes, mime_type, prior=None):
     """
     Identify which of Rudo's seven languages is spoken in an audio clip, so
-    Mansa STT is told the right language. Returns a language key, or None when
-    Gemini is unsure, says "other", or fails (the caller then keeps `prior`).
+    Mansa STT is told the right language. Returns a language key, "other" when
+    Gemini hears something that is not one of them (or cannot make it out), or
+    None when it fails (the caller then keeps `prior`).
     """
     if not GEN_API or not audio_bytes:
         return None
@@ -969,7 +978,7 @@ def process_voice_chat(user_id, audio_bytes, filename="voice_note", mime_type="a
         return {
             "reply": FALLBACK_MSG.get(prior, FALLBACK_MSG["english"]),
             "user_id": user_id,
-            "error": "transcription_failed",
+            "error": "audio_too_short",
         }
 
     # Clean the audio once so language identification and STT see the same bytes.
@@ -996,6 +1005,20 @@ def process_voice_chat(user_id, audio_bytes, filename="voice_note", mime_type="a
     detected = None
     if VOICE_AUTO_DETECT_LANGUAGE:
         detected = detect_spoken_language(prepared_bytes, prepared_mime, prior)
+    if detected == "other":
+        clip_seconds = levels["seconds"] if levels else (prepared_duration or 0)
+        if clip_seconds < VOICE_UNCLEAR_MAX_SECONDS:
+            logging.warning(
+                f"[process_voice_chat] unclear audio (detected=other, {clip_seconds:.1f}s), "
+                "asking the patient to try again"
+            )
+            return {
+                "reply": FALLBACK_MSG.get(prior, FALLBACK_MSG["english"]),
+                "user_id": user_id,
+                "error": "unclear_audio",
+            }
+        detected = None  # long clip: keep the app's language setting
+
     spoken = detected or prior
     logging.info(
         f"[process_voice_chat] prior={prior} detected={detected} using={spoken}"
