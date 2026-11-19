@@ -91,6 +91,8 @@ SUPPORTED_LANGUAGES = ["english", "shona", "ndebele", "chinyanja", "bemba", "ton
 # transcribing, because Mansa has no auto-detect and the app's language setting
 # is often not the language the patient speaks. Set VOICE_AUTO_DETECT_LANGUAGE=0
 # in the Vercel env to switch this off and trust the app's setting again.
+# NOTE: when the caller sends language_locked=1 (the user explicitly picked the
+# language), detection can never override the chosen language, regardless of this flag.
 VOICE_AUTO_DETECT_LANGUAGE = os.environ.get("VOICE_AUTO_DETECT_LANGUAGE", "1") != "0"
 
 # When Gemini says a clip is "other" (unintelligible or not one of our
@@ -946,18 +948,25 @@ def process_chat(user_id, message, forced_lang=None):
     }
 
 
+# CHANGED: new `language_locked` parameter.
 def process_voice_chat(user_id, audio_bytes, filename="voice_note", mime_type="audio/wav",
                        language=None, duration_seconds=None, synthesize_audio=False,
-                       transcribe_only=False):
+                       transcribe_only=False, language_locked=False):
     """
     Voice in via Mansa STT. Identify the language actually spoken in the clip
     (Gemini listens to the audio), transcribe in that language, and run the
     normal grounded text pipeline. Languages without Mansa STT (ndebele, tonga,
     lozi) get the text fallback.
 
-    `language` is only a prior: it is the app's language setting, which often
-    differs from what the patient speaks. Mansa has no auto-detect, so telling
-    it the wrong language produces a wrong or garbled transcript.
+    `language` is the app's language setting. By default it is only a prior: it
+    often differs from what the patient speaks, and Mansa has no auto-detect, so
+    telling it the wrong language produces a wrong or garbled transcript.
+
+    `language_locked` means the user explicitly picked the language. Then
+    `language` is used as is. Gemini is still asked to listen, but only so an
+    unintelligible short clip can be rejected. It never overrides the choice,
+    because Gemini is unreliable on Shona, Bemba and Chichewa and a wrong guess
+    makes Mansa decode with the wrong language model.
 
     TTS is OFF by default: the rudo-chat edge function rewrites the reply
     (appointment agent) and the app calls the tts edge function itself, so
@@ -1002,9 +1011,12 @@ def process_voice_chat(user_id, audio_bytes, filename="voice_note", mime_type="a
                 "error": "audio_silent",
             }
 
+    # CHANGED: when the user locked the language, Gemini may only veto a clip it
+    # cannot make out. It never overrides the user's choice.
     detected = None
-    if VOICE_AUTO_DETECT_LANGUAGE:
+    if VOICE_AUTO_DETECT_LANGUAGE or language_locked:
         detected = detect_spoken_language(prepared_bytes, prepared_mime, prior)
+
     if detected == "other":
         clip_seconds = levels["seconds"] if levels else (prepared_duration or 0)
         if clip_seconds < VOICE_UNCLEAR_MAX_SECONDS:
@@ -1019,9 +1031,19 @@ def process_voice_chat(user_id, audio_bytes, filename="voice_note", mime_type="a
             }
         detected = None  # long clip: keep the app's language setting
 
-    spoken = detected or prior
+    if language_locked:
+        spoken = prior
+        if detected and detected != prior:
+            logging.warning(
+                f"[process_voice_chat] language locked to {prior}, "
+                f"Gemini heard {detected}; keeping {prior}"
+            )
+    else:
+        spoken = detected or prior
+
     logging.info(
-        f"[process_voice_chat] prior={prior} detected={detected} using={spoken}"
+        f"[process_voice_chat] prior={prior} detected={detected} "
+        f"locked={language_locked} using={spoken}"
     )
 
     if spoken not in VOICE_SUPPORTED_LANGUAGES:
