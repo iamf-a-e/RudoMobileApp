@@ -33,7 +33,8 @@ Audio handling (browser recordings):
      clearly worse transcripts.
   5. Near-silent clips are rejected (see SILENCE_PEAK) because speech models
      hallucinate text for them. Loudness is logged on every request.
-  6. Browser WAV headers can carry bad chunk sizes (0 or 0xFFFFFFFF) or
+  6. Quiet recordings are amplified toward a healthy level (see NORMALIZE_PEAK).
+  7. Browser WAV headers can carry bad chunk sizes (0 or 0xFFFFFFFF) or
      32-bit float samples. Mansa then fails with "Could not determine audio
      duration". _normalize_wav rebuilds a clean 16-bit PCM WAV and measures the
      real duration.
@@ -124,6 +125,14 @@ TARGET_SAMPLE_RATE = int(os.environ.get("MANSA_TARGET_SAMPLE_RATE", "16000"))
 # mic noise. Speech models invent text for such clips (a real example was a
 # Welsh sentence about Bhutan), so they are rejected instead of transcribed.
 SILENCE_PEAK = float(os.environ.get("MANSA_SILENCE_PEAK", "0.01"))
+
+# Quiet recordings (laptop mics, distance from the phone) transcribe worse.
+# WAV audio whose loudest sample is below NORMALIZE_PEAK is amplified so that
+# peak reaches NORMALIZE_PEAK, never by more than MAX_GAIN times. Clips quieter
+# than SILENCE_PEAK are never boosted (they are rejected as silence). Set
+# MANSA_NORMALIZE_PEAK=0 to turn this off.
+NORMALIZE_PEAK = float(os.environ.get("MANSA_NORMALIZE_PEAK", "0.7"))
+MAX_GAIN = float(os.environ.get("MANSA_MAX_GAIN", "20"))
 
 # Anything smaller than this is a header with no speech (a bare WAV header is 44
 # bytes). Mansa answers those with "Could not determine audio duration".
@@ -250,6 +259,33 @@ def _to_mono_resampled(data, ch, rate, target_rate):
     return mono.tobytes(), 1, new_rate
 
 
+def _boost_quiet_speech(data):
+    """Amplify quiet 16-bit PCM toward NORMALIZE_PEAK. Returns PCM bytes."""
+    if not NORMALIZE_PEAK or not data:
+        return data
+    samples = array("h")
+    samples.frombytes(data[: len(data) // 2 * 2])
+    if sys.byteorder == "big":
+        samples.byteswap()
+    if not samples:
+        return data
+    peak = max(max(samples), -min(samples)) / 32768.0
+    if peak < SILENCE_PEAK or peak >= NORMALIZE_PEAK * 0.9:
+        return data
+    gain = min(MAX_GAIN, NORMALIZE_PEAK / peak)
+    if gain < 1.2:
+        return data
+    boosted = array(
+        "h", (max(-32768, min(32767, int(x * gain))) for x in samples)
+    )
+    logging.info(
+        f"[prepare_audio] quiet clip (peak={peak:.3f}), applied gain x{gain:.1f}"
+    )
+    if sys.byteorder == "big":
+        boosted.byteswap()
+    return boosted.tobytes()
+
+
 def _normalize_wav(audio_bytes):
     """
     Rebuild a clean 16-bit PCM WAV from browser-recorded audio. Fixes bad chunk
@@ -306,6 +342,9 @@ def _normalize_wav(audio_bytes):
         if converted:
             data, ch, rate = converted
             block = ch * bits // 8
+
+    if bits == 16:
+        data = _boost_quiet_speech(data)
 
     header = (
         b"RIFF" + struct.pack("<I", 36 + len(data)) + b"WAVE"
