@@ -1,5 +1,5 @@
 """
-Dawa Health: Mansa STT/TTS client + voice-language gating
+Dawa Health: Mansa STT/TTS client + voice-language gating 
 ==========================================================
 Replaces sahara_client.py. Lives at api/_lib/mansa_client.py.
 
